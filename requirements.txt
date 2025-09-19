@@ -1,0 +1,11 @@
+# FastMCP JIRA Server Requirements
+# Install with: pip install -r requirements.txt
+
+# FastMCP - Modern MCP framework
+fastmcp>=0.4.0
+
+# JIRA Python library
+jira>=3.5.0
+
+# Additional dependencies (optional)
+python-dotenv>=1.0.0  # For environment variable management if needed

@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitOps ZTP Stale Issues Analysis Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .nav-bar {
+            background: #2c3e50;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .nav-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .nav-btn {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s;
+        }
+
+        .nav-btn:hover {
+            background: #2980b9;
+        }
+
+        .nav-btn.active {
+            background: #e74c3c;
+        }
+
+        .page-section {
+            display: none;
+            padding: 30px;
+        }
+
+        .page-section.active {
+            display: block;
+        }
+
+        .exec-summary {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+
+        .exec-title {
+            font-size: 2.5em;
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .key-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .metric-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+            border-left: 5px solid #3498db;
+        }
+
+        .metric-number {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #e74c3c;
+            margin-bottom: 5px;
+        }
+
+        .metric-label {
+            color: #7f8c8d;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+
+        .chart-card {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .chart-title {
+            font-size: 1.3em;
+            color: #2c3e50;
+            margin-bottom: 20px;
+            text-align: center;
+            font-weight: 600;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+
+        header {
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .data-summary {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            border-left: 5px solid #007bff;
+        }
+
+        .data-summary h2 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+        }
+
+        .raw-data {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            max-height: 600px;
+            overflow-y: auto;
+            border: 1px solid #e9ecef;
+        }
+
+        footer {
+            background: #2c3e50;
+            color: #bdc3c7;
+            padding: 20px 30px;
+            text-align: center;
+            font-size: 0.9em;
+        }
+
+        footer p {
+            margin-bottom: 5px;
+        }
+
+        @media (max-width: 768px) {
+            .charts-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .nav-bar {
+                flex-direction: column;
+                gap: 10px;
+            }
+            
+            .nav-buttons {
+                flex-wrap: wrap;
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation -->
+        <nav class="nav-bar">
+            <div style="color: white; font-weight: bold;">GitOps ZTP Stale Issues Report</div>
+            <div class="nav-buttons">
+                <button class="nav-btn active" onclick="showPage('executive')">Executive Dashboard</button>
+                <button class="nav-btn" onclick="showPage('detailed')">Detailed Data</button>
+            </div>
+        </nav>
+
+        <!-- Executive Summary Page -->
+        <div id="executive" class="page-section active">
+            <div class="exec-summary">
+                <h1 class="exec-title">Executive Dashboard</h1>
+                
+                <!-- Intelligent Executive Summary -->
+                <div style="background: white; padding: 2rem; border-radius: 10px; margin-bottom: 2rem; border-left: 5px solid #e74c3c;">
+                    <h2 style="color: #2c3e50; margin-bottom: 1.5rem; font-size: 1.5rem;">📋 Executive Summary</h2>
+                    <div style="color: #2c3e50; line-height: 1.8; font-size: 1rem;">
+                        <p style="margin-bottom: 1rem;"><strong>Current State:</strong> Analysis of GitOps ZTP component reveals <strong>{total_stale} out of {total_analyzed} issues ({stale_rate}%)</strong> in a stale state, indicating process gaps requiring attention.</p>
+                        
+                        <p style="margin-bottom: 1rem;"><strong>Critical Areas:</strong> Issues with staleness threshold of <strong>{days_threshold}+ days</strong> have been identified across multiple releases, with focus on {issue_type_text}.</p>
+                        
+                        <p style="margin-bottom: 1rem;"><strong>Scope:</strong> Analysis covers {version_scope_text} with {component_scope_text}.</p>
+                        
+                        <p style="margin-bottom: 0;"><strong>Action Required:</strong> Review detailed findings and implement necessary process improvements to reduce stale issue accumulation.</p>
+                    </div>
+                </div>
+                
+                <div class="key-metrics">
+                    <div class="metric-card">
+                        <div class="metric-number">{total_stale}</div>
+                        <div class="metric-label">Stale Issues</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-number">{stale_rate}%</div>
+                        <div class="metric-label">Stale Rate</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-number">{total_analyzed}</div>
+                        <div class="metric-label">Total Analyzed</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-number">{days_threshold}+</div>
+                        <div class="metric-label">Days Threshold</div>
+                    </div>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <div class="chart-title">Analysis Overview</div>
+                        <div class="chart-container">
+                            <canvas id="overviewChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-title">Issue Distribution</div>
+                        <div class="chart-container">
+                            <canvas id="distributionChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="background: white; padding: 25px; border-radius: 10px; margin-top: 30px;">
+                    <h3 style="color: #e74c3c; margin-bottom: 15px;">Key Findings</h3>
+                    <ul style="color: #2c3e50; line-height: 1.8;">
+                        <li><strong>Threshold:</strong> Issues stale for {days_threshold}+ days identified</li>
+                        <li><strong>Scope:</strong> {issue_type_text} analyzed</li>
+                        <li><strong>Coverage:</strong> {version_scope_text} included</li>
+                        <li><strong>Analysis:</strong> {analysis_type_text}</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Detailed Data Page -->
+        <div id="detailed" class="page-section">
+            <header>
+                <h1>Detailed Analysis Data</h1>
+                <p>Complete stale issues analysis results</p>
+                <p style="font-size: 0.9em; margin-top: 10px;">Generated: {generation_time}</p>
+            </header>
+
+            <div class="content">
+                <div class="data-summary">
+                    <h2>Analysis Parameters</h2>
+                    <ul style="color: #2c3e50; line-height: 1.6;">
+                        <li><strong>Staleness Threshold:</strong> {days_threshold} days</li>
+                        <li><strong>Include No Comments:</strong> {include_no_comments_text}</li>
+                        <li><strong>Affects Versions:</strong> {affects_versions_text}</li>
+                        <li><strong>Projects:</strong> {projects_text}</li>
+                        <li><strong>Issue Types:</strong> {issue_types_text}</li>
+                        <li><strong>Components:</strong> {components_text}</li>
+                        <li><strong>Max Results:</strong> {max_results}</li>
+                        <li><strong>Comment Analysis:</strong> {comment_analysis_text}</li>
+                    </ul>
+                </div>
+
+                <div class="data-summary">
+                    <h2>Complete Analysis Results</h2>
+                    <div class="raw-data">{stale_data}</div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p><strong>GitOps ZTP Stale Issues Analysis Report</strong> | Generated on {generation_date}</p>
+            <p>Staleness Threshold: {days_threshold}+ days | Analysis Tool: MCP JIRA Server</p>
+        </footer>
+    </div>
+
+    <script>
+        // Page Navigation
+        function showPage(pageId) {
+            // Hide all pages
+            document.querySelectorAll('.page-section').forEach(page => {
+                page.classList.remove('active');
+            });
+            
+            // Remove active class from all buttons
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // Show selected page
+            document.getElementById(pageId).classList.add('active');
+            
+            // Add active class to clicked button
+            event.target.classList.add('active');
+        }
+
+        // Chart Configuration
+        const chartColors = {
+            primary: '#3498db',
+            secondary: '#e74c3c',
+            success: '#27ae60',
+            warning: '#f39c12',
+            info: '#9b59b6'
+        };
+
+        // Initialize Charts
+        window.onload = function() {
+            // Overview Chart
+            const overviewCtx = document.getElementById('overviewChart').getContext('2d');
+            new Chart(overviewCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Stale Issues', 'Non-Stale Issues'],
+                    datasets: [{
+                        data: [{total_stale}, {non_stale_count}],
+                        backgroundColor: [chartColors.secondary, chartColors.success],
+                        borderWidth: 3,
+                        borderColor: '#ffffff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'bottom' }
+                    }
+                }
+            });
+
+            // Distribution Chart
+            const distributionCtx = document.getElementById('distributionChart').getContext('2d');
+            new Chart(distributionCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['Total Analyzed', 'Stale Issues', 'Threshold Days'],
+                    datasets: [{
+                        label: 'Count',
+                        data: [{total_analyzed}, {total_stale}, {days_threshold}],
+                        backgroundColor: [chartColors.primary, chartColors.secondary, chartColors.warning],
+                        borderRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { beginAtZero: true, ticks: { stepSize: 1 } }
+                    }
+                }
+            });
+        };
+    </script>
+</body>
+</html>
