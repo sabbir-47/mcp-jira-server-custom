@@ -61,8 +61,7 @@ export JIRA_TOKEN="your-api-token"
 ```
 
 ### 4. Get Your JIRA API Token
-1. Go to [Atlassian Account Settings](https://id.atlassian.com/manage-profile/security/api-tokens)
-2. Click "Create API token"
+1. Go to JIRA and create PAT
 3. Copy the token and use it as `JIRA_TOKEN`
 
 ## 🎯 Usage
@@ -133,8 +132,8 @@ The AI will automatically translate these requests into the appropriate MCP tool
 ### Environment Variables
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `JIRA_URL` | JIRA instance URL | `https://company.atlassian.net` |
-| `JIRA_USERNAME` | Your JIRA email/username | `user@company.com` |
+| `JIRA_URL` | JIRA instance URL | `'https://issues.redhat.com'` |
+| `JIRA_USERNAME` | Your JIRA email/username | `user@redhat.com` |
 | `JIRA_TOKEN` | JIRA API token | `ATT3xFfGf0...` |
 
 ### MCP Tool Parameters
@@ -144,7 +143,7 @@ The AI will automatically translate these requests into the appropriate MCP tool
 - `days_threshold`: Days threshold (default: 14)
 - `include_no_comments`: Include issues with no comments (default: true)
 - `status_filter`: Filter by specific status
-- `affects_versions`: Array of version names to filter by (e.g., ["1.0", "2.0"])
+- `affects_versions`: Array of version names to filter by (e.g., ["4.16.z", "4.18"])
 
 #### Smart Comment Tool
 - `mode`: Operation mode - "dry_run" (default) or "live"
@@ -160,45 +159,46 @@ The AI will automatically translate these requests into the appropriate MCP tool
 
 ### Example 1: Weekly Stale Issue Check
 **User Request:**
-> "Check project MYPROJ for issues that haven't been updated in 7 days and add polite follow-up comments to their assignees"
+> "Check project OCPBUGS for issues that haven't been updated in 7 days and add polite follow-up comments to their assignees"
 
 **AI Response:**
 The AI will use `jira_comment_on_stale_issues` with:
-- `project_key="MYPROJ"`
+- `project_key="OCPBUGS"`
 - `days_threshold=7`
-- `comment_template="{assignee} Weekly check-in: Any updates on this issue?"`
+- `comment_template="{assignee} Do you have any update on this issue?"`
 - `mode="dry_run"` (for safety first)
 
 Then if user approves: `mode="live"` to actually post comments
 
 ### Example 2: Finding Stale Issues
 **User Request:**
-> "Show me all assigned issues in project ABC that haven't had comments in 2 weeks"
+> "Show me all assigned issues in project OCPBUGS that haven't had comments in 2 weeks in 4.18.z version"
 
 **AI Response:**
 The AI will use `jira_find_stale_issues` with:
 - `project_key="ABC"`
 - `days_threshold=14`
 - `include_no_comments=true`
+- `affects_versions=["4.18.z"]`
 
 ### Example 3: Version-Specific Stale Issues
 **User Request:**
-> "Find stale issues in project XYZ that affect version 2.0 and comment on them urgently"
+> "Find stale issues in project XYZ that affect version 4.18.z and comment on them urgently"
 
 **AI Response:**
 The AI will:
-1. Use `jira_find_stale_issues` with `affects_versions=["2.0"]`
+1. Use `jira_find_stale_issues` with `affects_versions=["4.18.z"]`
 2. Use `jira_comment_on_stale_issues` with version filter and urgent template
 3. Start in dry_run mode for user approval
 
 ### Example 4: Targeted Issue Comments
 **User Request:**
-> "Add follow-up comments to these specific issues: TEST-123, TEST-456, TEST-789"
+> "Add follow-up comments to these specific issues: OCPBUGS-123, OCPBUGS-456, OCPBUGS-789"
 
 **AI Response:**
 The AI will use `jira_comment_on_stale_issues` with:
 - `target_scope="specific_issues"`
-- `specific_issues=["TEST-123", "TEST-456", "TEST-789"]`
+- `specific_issues=[OCPBUGS-123, OCPBUGS-456, OCPBUGS-789"]`
 - `mode="dry_run"` first for review
 
 ## 🚨 Safety Features
@@ -281,13 +281,13 @@ You can set up regular AI assistant tasks to check for stale issues:
 
 ```
 # Weekly automation prompt
-"Every Monday at 9 AM, check project MYPROJ for stale issues older than 7 days and preview comments"
+"Every Monday at 9 AM, check project OCPBUGS for stale issues older than 7 days and preview comments"
 
 # Version-specific checks
-"Check for stale issues in version 2.0 every Friday and comment urgently"
+"Check for stale issues in version 4.20 every Friday and comment urgently"
 
 # Targeted follow-ups
-"Comment on these specific issues weekly: PROJ-123, PROJ-456"
+"Comment on these specific issues weekly: OCPBUGS-123, OCPBUGS-456"
 ```
 
 ### CI/CD Integration
@@ -301,7 +301,7 @@ You can integrate the MCP server with CI/CD workflows by having AI assistants au
       "command": "python",
       "args": ["/path/to/jira_mcp/mcp_jira_server.py"],
       "env": {
-        "JIRA_URL": "https://company.atlassian.net",
+        "JIRA_URL": "https://issues.redhat.com",
         "JIRA_USERNAME": "bot@company.com",
         "JIRA_TOKEN": "your-token"
       }
@@ -335,34 +335,6 @@ You can customize comment templates when using the MCP server:
 ### AI Automation Strategy
 1. **Daily**: Ask AI to check issues > 3 days old
 2. **Weekly**: Ask AI to check issues > 7 days old and post comments
-3. **Monthly**: Ask AI to generate stale issue reports
-
-### Security
-- Use dedicated service account for automation
-- Limit API token permissions
-- Regularly rotate tokens
-- Monitor API usage
-
-## 🆘 Support
-
-### Getting Help
-1. Check this README
-2. Review error messages and logs
-3. Verify JIRA permissions manually
-4. Test with simple JQL queries first
-
-### Common JQL Examples
-```sql
-# All open issues assigned to someone
-project = MYPROJ AND assignee is not EMPTY AND status != Closed
-
-# Bugs in progress
-project = MYPROJ AND issuetype = Bug AND status = "In Progress"
-
-# High priority unresolved
-project = MYPROJ AND priority = High AND resolution is EMPTY
-```
-
 ---
 
 🎉 **Happy JIRA Automating!** This tool helps keep your projects moving by ensuring no assigned work falls through the cracks.
