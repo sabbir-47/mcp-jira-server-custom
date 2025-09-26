@@ -56,12 +56,12 @@ chmod +x setup_env.sh
 Or manually set:
 ```bash
 export JIRA_URL="https://your-domain.atlassian.net"
-export JIRA_USERNAME="your-email@example.com"
-export JIRA_TOKEN="your-api-token"
+export JIRA_TOKEN="your-bearer-token"
 ```
 
-### 4. Get Your JIRA API Token
-1. Go to JIRA and create PAT
+### 4. Get Your JIRA Bearer Token
+1. Go to your JIRA instance → Settings → Personal Access Tokens
+2. Create a new Bearer token with appropriate permissions
 3. Copy the token and use it as `JIRA_TOKEN`
 
 ## 🎯 Usage
@@ -133,8 +133,7 @@ The AI will automatically translate these requests into the appropriate MCP tool
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `JIRA_URL` | JIRA instance URL | `'https://issues.redhat.com'` |
-| `JIRA_USERNAME` | Your JIRA email/username | `user@redhat.com` |
-| `JIRA_TOKEN` | JIRA API token | `ATT3xFfGf0...` |
+| `JIRA_TOKEN` | JIRA Bearer token | `ATT3xFfGf0...` |
 
 ### MCP Tool Parameters
 
@@ -236,7 +235,6 @@ pip install mcp jira python-dotenv
 ```bash
 # Check environment variables
 echo $JIRA_URL
-echo $JIRA_USERNAME
 echo $JIRA_TOKEN
 
 # Recreate .env file
@@ -302,8 +300,7 @@ You can integrate the MCP server with CI/CD workflows by having AI assistants au
       "args": ["/path/to/jira_mcp/mcp_jira_server.py"],
       "env": {
         "JIRA_URL": "https://issues.redhat.com",
-        "JIRA_USERNAME": "bot@company.com",
-        "JIRA_TOKEN": "your-token"
+        "JIRA_TOKEN": "your-bearer-token"
       }
     }
   }

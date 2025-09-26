@@ -1,856 +1,582 @@
 #!/usr/bin/env python3
 """
-MCP JIRA Server
-===============
+FastMCP JIRA Server
+==================
 
-A Model Context Protocol (MCP) server for interacting with JIRA.
+A FastMCP server for interacting with JIRA.
 This server provides tools for creating issues, searching, updating, and managing JIRA projects.
 
 Requirements:
-- mcp (Model Context Protocol library)
+- fastmcp (FastMCP library)
 - jira (Python JIRA library)
-- asyncio for async operations
 """
 
 import asyncio
-import json
 import logging
 import os
-from typing import Any, Dict, List, Optional, Sequence
-from urllib.parse import urlparse
+import sys
+import time
+from datetime import datetime, timedelta
+from typing import List, Optional
 
 try:
-    from mcp.server import Server, NotificationOptions
-    from mcp.server.models import InitializationOptions
-    from mcp.server.stdio import stdio_server
-    from mcp.types import (
-        CallToolRequest,
-        CallToolResult,
-        ListToolsRequest,
-        ListToolsResult,
-        Tool,
-        TextContent,
-        ImageContent,
-        EmbeddedResource,
-    )
+    from fastmcp import FastMCP
 except ImportError:
-    print("MCP library not found. Install with: pip install mcp")
+    print("FastMCP library not found. Install with: pip install fastmcp", file=sys.stderr)
     exit(1)
 
 try:
     from jira import JIRA
     from jira.exceptions import JIRAError
 except ImportError:
-    print("JIRA library not found. Install with: pip install jira")
+    print("JIRA library not found. Install with: pip install jira", file=sys.stderr)
     exit(1)
-
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Create FastMCP app
+app = FastMCP("JIRA Server")
 
-class MCPJiraServer:
-    """MCP Server for JIRA integration."""
+# Global JIRA client and rate limiting
+jira_client: Optional[JIRA] = None
+last_api_call = 0
+api_call_delay = 1.0  # 1 second between API calls (reduced from 2.0)
+burst_count = 0
+burst_limit = 10  # Allow more burst calls (increased from 5)
+burst_reset_time = 60  # Reset burst counter after 1 minute
+
+
+async def init_jira_client():
+    """Initialize JIRA client with Bearer token authentication."""
+    global jira_client
     
-    def __init__(self):
-        self.server = Server("mcp-jira-server")
-        self.jira_client: Optional[JIRA] = None
-        self.jira_url = os.getenv("JIRA_URL")
-        self.jira_username = os.getenv("JIRA_USERNAME")
-        self.jira_token = os.getenv("JIRA_TOKEN")  # API token or password
-        
-        # Register handlers
-        self.register_handlers()
+    jira_url = os.getenv("JIRA_URL")
+    jira_token = os.getenv("JIRA_TOKEN")
     
-    def register_handlers(self):
-        """Register MCP handlers."""
+    if not all([jira_url, jira_token]):
+        raise ValueError(
+            "JIRA credentials not provided. Please set JIRA_URL and JIRA_TOKEN (Bearer token) environment variables."
+        )
+    
+    try:
+        # Use Bearer token authentication
+        jira_client = JIRA(
+            server=jira_url,
+            token_auth=jira_token
+        )
+        logger.info("JIRA client initialized successfully with Bearer token")
+    except JIRAError as e:
+        logger.error(f"Failed to initialize JIRA client: {str(e)}")
+        raise
+
+
+async def rate_limit():
+    """Ensure we don't exceed rate limits with burst protection."""
+    global last_api_call, burst_count
+    
+    current_time = time.time()
+    time_since_last_call = current_time - last_api_call
+    
+    # Reset burst counter if enough time has passed
+    if time_since_last_call > burst_reset_time:
+        burst_count = 0
+    
+    # Calculate sleep time based on burst count
+    base_delay = api_call_delay
+    
+    # If we've made too many consecutive calls, add exponential backoff
+    if burst_count >= burst_limit:
+        # Exponential backoff: 2^(burst_count - burst_limit) * base_delay
+        backoff_multiplier = 2 ** min(burst_count - burst_limit, 2)  # Cap at 4x (reduced from 16x)
+        sleep_time = base_delay * backoff_multiplier
+        # Cap maximum sleep time at 8 seconds to prevent timeouts
+        sleep_time = min(sleep_time, 8.0)
+        logger.info(f"Rate limiting: Burst limit reached, sleeping for {sleep_time:.1f}s")
+    else:
+        # Regular rate limiting
+        if time_since_last_call < base_delay:
+            sleep_time = base_delay - time_since_last_call
+        else:
+            sleep_time = 0
+    
+    if sleep_time > 0:
+        await asyncio.sleep(sleep_time)
+    
+    # Update tracking variables
+    last_api_call = time.time()
+    burst_count += 1
+
+
+@app.tool()
+async def jira_search_issues(jql: str, max_results: int = 50) -> str:
+    """Search for JIRA issues using JQL (JIRA Query Language)."""
+    if not jira_client:
+        await init_jira_client()
+    
+    try:
+        await rate_limit()
+        issues = jira_client.search_issues(jql, maxResults=max_results)
         
-        @self.server.list_tools()
-        async def handle_list_tools() -> List[Tool]:
-            """List available JIRA tools."""
-            return [
-                Tool(
-                    name="jira_search_issues",
-                    description="Search for JIRA issues using JQL (JIRA Query Language)",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "jql": {
-                                "type": "string",
-                                "description": "JQL query string (e.g., 'project = TEST AND status = Open')"
-                            },
-                            "max_results": {
-                                "type": "integer",
-                                "description": "Maximum number of results to return (default: 50)",
-                                "default": 50
-                            }
-                        },
-                        "required": ["jql"]
-                    }
-                ),
-                Tool(
-                    name="jira_get_issue",
-                    description="Get detailed information about a specific JIRA issue",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "issue_key": {
-                                "type": "string",
-                                "description": "JIRA issue key (e.g., 'TEST-123')"
-                            }
-                        },
-                        "required": ["issue_key"]
-                    }
-                ),
-                Tool(
-                    name="jira_create_issue",
-                    description="Create a new JIRA issue",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "project_key": {
-                                "type": "string",
-                                "description": "Project key (e.g., 'TEST')"
-                            },
-                            "issue_type": {
-                                "type": "string",
-                                "description": "Issue type (e.g., 'Bug', 'Task', 'Story')"
-                            },
-                            "summary": {
-                                "type": "string",
-                                "description": "Issue summary/title"
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "Issue description"
-                            },
-                            "priority": {
-                                "type": "string",
-                                "description": "Priority (e.g., 'High', 'Medium', 'Low')",
-                                "default": "Medium"
-                            },
-                            "assignee": {
-                                "type": "string",
-                                "description": "Assignee username (optional)"
-                            }
-                        },
-                        "required": ["project_key", "issue_type", "summary", "description"]
-                    }
-                ),
-                Tool(
-                    name="jira_update_issue",
-                    description="Update an existing JIRA issue",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "issue_key": {
-                                "type": "string",
-                                "description": "JIRA issue key (e.g., 'TEST-123')"
-                            },
-                            "summary": {
-                                "type": "string",
-                                "description": "New summary/title"
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "New description"
-                            },
-                            "status": {
-                                "type": "string",
-                                "description": "New status (e.g., 'In Progress', 'Done')"
-                            },
-                            "assignee": {
-                                "type": "string",
-                                "description": "New assignee username"
-                            }
-                        },
-                        "required": ["issue_key"]
-                    }
-                ),
-                Tool(
-                    name="jira_add_comment",
-                    description="Add a comment to a JIRA issue",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "issue_key": {
-                                "type": "string",
-                                "description": "JIRA issue key (e.g., 'TEST-123')"
-                            },
-                            "comment": {
-                                "type": "string",
-                                "description": "Comment text"
-                            }
-                        },
-                        "required": ["issue_key", "comment"]
-                    }
-                ),
-                Tool(
-                    name="jira_find_stale_issues",
-                    description="Find issues with assignees where the latest comment is older than specified days",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "project_key": {
-                                "type": "string",
-                                "description": "Project key to search in (e.g., 'TEST')"
-                            },
-                            "days_threshold": {
-                                "type": "integer",
-                                "description": "Number of days to consider comments stale (default: 14)",
-                                "default": 14
-                            },
-                            "include_no_comments": {
-                                "type": "boolean",
-                                "description": "Include issues with no comments at all (default: true)",
-                                "default": true
-                            },
-                            "status_filter": {
-                                "type": "string",
-                                "description": "Filter by status (e.g., 'Open', 'In Progress', or leave empty for all)"
-                            },
-                            "affects_versions": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Filter by Affects Version/s (e.g., ['1.0', '2.0'] or leave empty for all)"
-                            }
-                        },
-                        "required": ["project_key"]
-                    }
-                ),
-                Tool(
-                    name="jira_comment_on_stale_issues",
-                    description="Find stale issues and add comments tagging assignees with flexible targeting options",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "project_key": {
-                                "type": "string",
-                                "description": "Project key to search in (e.g., 'TEST'). Not required if specific_issues is provided."
-                            },
-                            "days_threshold": {
-                                "type": "integer",
-                                "description": "Number of days to consider comments stale (default: 14)",
-                                "default": 14
-                            },
-                            "exclude_statuses": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Status names to exclude (e.g., ['Closed', 'Done', 'On QA'])",
-                                "default": ["Closed", "Release Pending", "On_QA", "Verified"]
-                            },
-                            "comment_template": {
-                                "type": "string",
-                                "description": "Comment template with {assignee} placeholder",
-                                "default": "{assignee} Do you have any recent updates on this bug?"
-                            },
-                            "mode": {
-                                "type": "string",
-                                "enum": ["dry_run", "live"],
-                                "description": "Operation mode: 'dry_run' (preview only) or 'live' (actually post comments)",
-                                "default": "dry_run"
-                            },
-                            "target_scope": {
-                                "type": "string",
-                                "enum": ["all_stale", "specific_issues"],
-                                "description": "Comment on all found stale issues or only specific issues",
-                                "default": "all_stale"
-                            },
-                            "specific_issues": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Specific issue keys to comment on (e.g., ['TEST-123', 'TEST-456']). Used when target_scope is 'specific_issues'"
-                            },
-                            "affects_versions": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Filter by Affects Version/s when searching (e.g., ['1.0', '2.0'])"
-                            }
-                        },
-                        "required": []
-                    }
-                )
-            ]
+        if not issues:
+            return "No issues found matching the JQL query."
         
-        @self.server.call_tool()
-        async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
-            """Handle tool calls."""
+        result = f"Found {len(issues)} issue(s):\n\n"
+        for issue in issues:
+            result += f"**{issue.key}**: {issue.fields.summary}\n"
+            result += f"  Status: {issue.fields.status.name}\n"
+            result += f"  Assignee: {getattr(issue.fields.assignee, 'displayName', 'Unassigned')}\n"
+            result += f"  Priority: {getattr(issue.fields.priority, 'name', 'None')}\n"
+            result += f"  Created: {issue.fields.created}\n\n"
+        
+        return result
+        
+    except JIRAError as e:
+        return f"JIRA Error: {str(e)}"
+
+
+@app.tool()
+async def jira_get_issue(issue_key: str) -> str:
+    """Get detailed information about a specific JIRA issue."""
+    if not jira_client:
+        await init_jira_client()
+    
+    try:
+        await rate_limit()
+        issue = jira_client.issue(issue_key)
+        
+        result = f"**Issue: {issue.key}**\n\n"
+        result += f"**Summary:** {issue.fields.summary}\n"
+        result += f"**Status:** {issue.fields.status.name}\n"
+        result += f"**Assignee:** {getattr(issue.fields.assignee, 'displayName', 'Unassigned')}\n"
+        result += f"**Reporter:** {getattr(issue.fields.reporter, 'displayName', 'Unknown')}\n"
+        result += f"**Priority:** {getattr(issue.fields.priority, 'name', 'None')}\n"
+        result += f"**Issue Type:** {issue.fields.issuetype.name}\n"
+        result += f"**Project:** {issue.fields.project.name}\n"
+        result += f"**Created:** {issue.fields.created}\n"
+        result += f"**Updated:** {issue.fields.updated}\n\n"
+        
+        if hasattr(issue.fields, 'description') and issue.fields.description:
+            result += f"**Description:**\n{issue.fields.description}\n\n"
+        
+        # Get comments
+        await rate_limit()
+        comments = jira_client.comments(issue)
+        if comments:
+            result += f"**Comments ({len(comments)}):**\n"
+            for comment in comments[-5:]:  # Show last 5 comments
+                result += f"- {comment.author.displayName} ({comment.created}): {comment.body}\n"
+        
+        return result
+        
+    except JIRAError as e:
+        return f"JIRA Error: {str(e)}"
+
+
+@app.tool()
+async def jira_create_issue(
+    project_key: str,
+    issue_type: str,
+    summary: str,
+    description: str,
+    priority: str = "Medium",
+    assignee: Optional[str] = None
+) -> str:
+    """Create a new JIRA issue."""
+    if not jira_client:
+        await init_jira_client()
+    
+    try:
+        issue_dict = {
+            'project': {'key': project_key},
+            'summary': summary,
+            'description': description,
+            'issuetype': {'name': issue_type},
+        }
+        
+        if priority:
+            issue_dict['priority'] = {'name': priority}
+        
+        if assignee:
+            issue_dict['assignee'] = {'name': assignee}
+        
+        await rate_limit()
+        new_issue = jira_client.create_issue(fields=issue_dict)
+        
+        result = f"✅ Issue created successfully!\n\n"
+        result += f"**Issue Key:** {new_issue.key}\n"
+        result += f"**Summary:** {summary}\n"
+        result += f"**Project:** {project_key}\n"
+        result += f"**Issue Type:** {issue_type}\n"
+        result += f"**Priority:** {priority}\n"
+        if assignee:
+            result += f"**Assignee:** {assignee}\n"
+        result += f"**URL:** {os.getenv('JIRA_URL')}/browse/{new_issue.key}\n"
+        
+        return result
+        
+    except JIRAError as e:
+        return f"JIRA Error: {str(e)}"
+
+
+@app.tool()
+async def jira_update_issue(
+    issue_key: str,
+    summary: Optional[str] = None,
+    description: Optional[str] = None,
+    status: Optional[str] = None,
+    assignee: Optional[str] = None
+) -> str:
+    """Update an existing JIRA issue."""
+    if not jira_client:
+        await init_jira_client()
+    
+    try:
+        await rate_limit()
+        issue = jira_client.issue(issue_key)
+        update_fields = {}
+        
+        if summary:
+            update_fields['summary'] = summary
+        
+        if description:
+            update_fields['description'] = description
+        
+        if assignee:
+            update_fields['assignee'] = {'name': assignee}
+        
+        if update_fields:
+            issue.update(fields=update_fields)
+        
+        # Handle status transition separately
+        if status:
+            await rate_limit()
+            transitions = jira_client.transitions(issue)
+            target_status = status
+            
+            for transition in transitions:
+                if transition['name'].lower() == target_status.lower():
+                    jira_client.transition_issue(issue, transition['id'])
+                    break
+            else:
+                return f"Status '{target_status}' not available for this issue"
+        
+        return f"✅ Issue {issue_key} updated successfully!"
+        
+    except JIRAError as e:
+        return f"JIRA Error: {str(e)}"
+
+
+@app.tool()
+async def jira_add_comment(
+    issue_key: str, 
+    comment: str, 
+    mention_assignee: bool = True,
+    custom_mention_user: Optional[str] = None,
+    mode: str = "dry_run"
+) -> str:
+    """Add a comment to a JIRA issue with optional assignee mentioning and preview mode.
+    
+    Args:
+        issue_key: The JIRA issue key (e.g., OCPBUGS-123)
+        comment: The comment text to add
+        mention_assignee: Whether to mention the current assignee (default: True)
+        custom_mention_user: Optional username to mention instead of assignee
+        mode: "dry_run" (preview only) or "live" (actually post comment)
+    """
+    if not jira_client:
+        await init_jira_client()
+    
+    try:
+        # Validate mode parameter
+        if mode not in ["dry_run", "live"]:
+            return f"❌ Invalid mode '{mode}'. Use 'dry_run' or 'live'."
+        
+        # Get issue details to find assignee if needed
+        final_comment = comment
+        mentioned_user = None
+        issue_summary = "Unknown"
+        current_assignee = "Unassigned"
+        
+        if mention_assignee or custom_mention_user or mode == "dry_run":
+            await rate_limit()
+            issue = jira_client.issue(issue_key)
+            issue_summary = issue.fields.summary
+            current_assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
+            
+            if custom_mention_user:
+                # Use custom user for mention
+                final_comment = f"[~{custom_mention_user}] {comment}"
+                mentioned_user = custom_mention_user
+            elif mention_assignee and issue.fields.assignee:
+                # Use assignee for mention
+                assignee_name = issue.fields.assignee.name
+                final_comment = f"[~{assignee_name}] {comment}"
+                mentioned_user = issue.fields.assignee.displayName
+            elif mention_assignee and not issue.fields.assignee:
+                # Issue has no assignee, add note about it
+                final_comment = f"{comment}\n\n_Note: This issue is currently unassigned._"
+        
+        # Handle dry run mode
+        if mode == "dry_run":
+            preview_msg = f"🔍 **COMMENT PREVIEW for {issue_key}**\n"
+            preview_msg += f"📋 **Issue**: {issue_summary}\n"
+            preview_msg += f"👤 **Current Assignee**: {current_assignee}\n"
+            preview_msg += f"💬 **Comment Mode**: {'Mention assignee' if mention_assignee else 'No mention'}\n"
+            if custom_mention_user:
+                preview_msg += f"🎯 **Custom Mention**: {custom_mention_user}\n"
+            preview_msg += f"\n📝 **Final Comment Text**:\n"
+            preview_msg += f"```\n{final_comment}\n```\n"
+            preview_msg += f"\n💡 **To post this comment, use mode='live'**"
+            if mentioned_user:
+                preview_msg += f"\n📧 **Will notify**: {mentioned_user}"
+            return preview_msg
+        
+        # Live mode - actually post the comment
+        await rate_limit()
+        jira_client.add_comment(issue_key, final_comment)
+        
+        # Build success message
+        success_msg = f"✅ Comment posted to {issue_key} successfully!"
+        success_msg += f"\n📋 Issue: {issue_summary}"
+        if mentioned_user:
+            success_msg += f"\n👤 Mentioned: {mentioned_user}"
+            success_msg += f"\n📧 Notification sent to: {mentioned_user}"
+        elif mention_assignee and not mentioned_user:
+            success_msg += f"\n⚠️  No assignee to mention (issue is unassigned)"
+        success_msg += f"\n🔗 View: {os.getenv('JIRA_URL')}/browse/{issue_key}"
+            
+        return success_msg
+        
+    except JIRAError as e:
+        return f"JIRA Error: {str(e)}"
+
+
+@app.tool()
+async def jira_find_stale_issues(
+    days_threshold: int = 14,
+    include_no_comments: bool = True,
+    affects_versions: List[str] = [],
+    max_results: int = 50,
+    additional_components: List[str] = []
+) -> str:
+    """Find stale Telco priority bugs with no recent comments (hardcoded criteria for OCPBUGS/MGMT)."""
+    if not jira_client:
+        await init_jira_client()
+    
+    try:
+        # HARDCODED DIRECTIVE 1: Base project and priority criteria
+        jql_parts = [
+            'project in (OCPBUGS, MGMT)',
+            'cf[12323649] in ("Telco:Priority-1", "Telco:Priority-2", "Telco:Priority-3")',
+            'status not in (Verified, ON_QA, Closed, "Release Pending")',
+            'assignee is not EMPTY'
+        ]
+        
+        # HARDCODED DIRECTIVE 2: Default components
+        default_components = [
+            "GitOps ZTP",
+            "Bare Metal Hardware Provisioning / baremetal-operator", 
+            "Networking / SR-IOV",
+            "oc"
+        ]
+        
+        # Combine default and additional components
+        all_components = default_components + additional_components
+        if all_components:
+            component_list = ", ".join([f'"{comp}"' for comp in all_components])
+            jql_parts.append(f'component in ({component_list})')
+        
+        # HARDCODED DIRECTIVE 3: Affects Version expansion (e.g., 4.18 -> 4.18, 4.18.z)
+        if affects_versions:
+            expanded_versions = []
+            for version in affects_versions:
+                # Add the base version
+                expanded_versions.append(f'"{version}"')
+                # Add the .z version  
+                expanded_versions.append(f'"{version}.z"')
+            
+            version_list = ", ".join(expanded_versions)
+            jql_parts.append(f'affectedVersion in ({version_list})')
+        
+        # Build and execute JQL query
+        base_jql = " AND ".join(jql_parts)
+        max_results = min(max_results, 25)  # Cap at 25 for faster processing and less timeouts
+        
+        logger.info(f"Executing JQL: {base_jql}")
+        await rate_limit()
+        issues = jira_client.search_issues(base_jql, maxResults=max_results, expand='changelog')
+        
+        if not issues:
+            return "✅ No Telco priority issues found matching the criteria."
+        
+        # Calculate the threshold date
+        threshold_date = datetime.now() - timedelta(days=days_threshold)
+        stale_issues = []
+        
+        result_preview = f"🔍 **Telco Priority Stale Issues Search**\n"
+        result_preview += f"📊 Processing {len(issues)} issues (limited to {max_results} for performance & rate limiting)\n"
+        result_preview += f"⏰ Staleness threshold: {days_threshold} days\n"
+        result_preview += f"🐌 Rate limited: 2s delay between API calls to protect issues.redhat.com\n"
+        if affects_versions:
+            result_preview += f"🎯 Affects versions: {', '.join(affects_versions)} (including .z variants)\n"
+        if additional_components:
+            result_preview += f"🔧 Additional components: {', '.join(additional_components)}\n"
+        result_preview += f"\n"
+        
+        for idx, issue in enumerate(issues):
             try:
-                # Initialize JIRA client if not already done
-                if not self.jira_client:
-                    await self.init_jira_client()
+                # Add rate limiting before each API call
+                await rate_limit()
                 
-                if name == "jira_search_issues":
-                    return await self.search_issues(arguments)
-                elif name == "jira_get_issue":
-                    return await self.get_issue(arguments)
-                elif name == "jira_create_issue":
-                    return await self.create_issue(arguments)
-                elif name == "jira_update_issue":
-                    return await self.update_issue(arguments)
-                elif name == "jira_add_comment":
-                    return await self.add_comment(arguments)
-                elif name == "jira_find_stale_issues":
-                    return await self.find_stale_issues(arguments)
-                elif name == "jira_comment_on_stale_issues":
-                    return await self.comment_on_stale_issues(arguments)
+                # Get comments for this issue
+                comments = jira_client.comments(issue)
+                
+                # Log progress every 3 issues for better visibility
+                if (idx + 1) % 3 == 0:
+                    logger.info(f"Processed {idx + 1}/{len(issues)} Telco priority issues... (faster rate limiting)")
+                
+                is_stale = False
+                latest_comment_date = None
+                
+                if not comments:
+                    # No comments at all
+                    if include_no_comments:
+                        is_stale = True
+                        latest_comment_date = "No comments"
                 else:
-                    return [TextContent(type="text", text=f"Unknown tool: {name}")]
+                    # Get the latest comment
+                    latest_comment = comments[-1]
+                    # Parse the comment date (JIRA returns ISO format)
+                    comment_date_str = latest_comment.created
+                    # Remove timezone info and microseconds for parsing
+                    if 'T' in comment_date_str:
+                        comment_date_str = comment_date_str.split('T')[0] + 'T' + comment_date_str.split('T')[1][:19]
+                    
+                    try:
+                        latest_comment_date = datetime.fromisoformat(comment_date_str.replace('Z', '+00:00'))
+                        # Convert to naive datetime for comparison
+                        if latest_comment_date.tzinfo:
+                            latest_comment_date = latest_comment_date.replace(tzinfo=None)
+                        
+                        if latest_comment_date < threshold_date:
+                            is_stale = True
+                    except ValueError:
+                        # If we can't parse the date, treat as stale
+                        is_stale = True
+                        latest_comment_date = comment_date_str
+                
+                if is_stale:
+                    stale_issues.append({
+                        'issue': issue,
+                        'latest_comment_date': latest_comment_date,
+                        'comments_count': len(comments)
+                    })
                     
             except Exception as e:
-                logger.error(f"Error in tool {name}: {str(e)}")
-                return [TextContent(type="text", text=f"Error: {str(e)}")]
-    
-    async def init_jira_client(self):
-        """Initialize JIRA client."""
-        if not all([self.jira_url, self.jira_username, self.jira_token]):
-            raise ValueError(
-                "JIRA credentials not provided. Please set JIRA_URL, JIRA_USERNAME, and JIRA_TOKEN environment variables."
-            )
+                logger.warning(f"Error processing issue {issue.key}: {str(e)}")
+                continue
         
-        try:
-            self.jira_client = JIRA(
-                server=self.jira_url,
-                basic_auth=(self.jira_username, self.jira_token)
-            )
-            logger.info("JIRA client initialized successfully")
-        except JIRAError as e:
-            logger.error(f"Failed to initialize JIRA client: {str(e)}")
-            raise
-    
-    async def search_issues(self, arguments: Dict[str, Any]) -> List[TextContent]:
-        """Search for JIRA issues using JQL."""
-        jql = arguments.get("jql")
-        max_results = arguments.get("max_results", 50)
+        if not stale_issues:
+            return "✅ No stale Telco priority issues found! All assigned issues have recent activity."
         
-        try:
-            issues = self.jira_client.search_issues(jql, maxResults=max_results)
-            
-            if not issues:
-                return [TextContent(type="text", text="No issues found matching the JQL query.")]
-            
-            result = f"Found {len(issues)} issue(s):\n\n"
-            for issue in issues:
-                result += f"**{issue.key}**: {issue.fields.summary}\n"
-                result += f"  Status: {issue.fields.status.name}\n"
-                result += f"  Assignee: {getattr(issue.fields.assignee, 'displayName', 'Unassigned')}\n"
-                result += f"  Priority: {getattr(issue.fields.priority, 'name', 'None')}\n"
-                result += f"  Created: {issue.fields.created}\n\n"
-            
-            return [TextContent(type="text", text=result)]
-            
-        except JIRAError as e:
-            return [TextContent(type="text", text=f"JIRA Error: {str(e)}")]
-    
-    async def get_issue(self, arguments: Dict[str, Any]) -> List[TextContent]:
-        """Get detailed information about a JIRA issue."""
-        issue_key = arguments.get("issue_key")
+        # Format results
+        result = result_preview
+        result += f"🚨 **Found {len(stale_issues)} stale Telco priority issue(s):**\n"
+        result += f"(Issues with assignees but no comments or comments older than {days_threshold} days)\n\n"
         
-        try:
-            issue = self.jira_client.issue(issue_key)
+        for item in stale_issues:
+            issue = item['issue']
+            latest_date = item['latest_comment_date']
+            comments_count = item['comments_count']
             
-            result = f"**Issue: {issue.key}**\n\n"
-            result += f"**Summary:** {issue.fields.summary}\n"
-            result += f"**Status:** {issue.fields.status.name}\n"
-            result += f"**Assignee:** {getattr(issue.fields.assignee, 'displayName', 'Unassigned')}\n"
-            result += f"**Reporter:** {getattr(issue.fields.reporter, 'displayName', 'Unknown')}\n"
-            result += f"**Priority:** {getattr(issue.fields.priority, 'name', 'None')}\n"
-            result += f"**Issue Type:** {issue.fields.issuetype.name}\n"
-            result += f"**Project:** {issue.fields.project.name}\n"
-            result += f"**Created:** {issue.fields.created}\n"
-            result += f"**Updated:** {issue.fields.updated}\n\n"
+            # Get component info
+            components = getattr(issue.fields, 'components', [])
+            component_names = [comp.name for comp in components] if components else ['No component']
             
-            if hasattr(issue.fields, 'description') and issue.fields.description:
-                result += f"**Description:**\n{issue.fields.description}\n\n"
+            # Get affected versions
+            affected_versions = getattr(issue.fields, 'versions', [])
+            version_names = [ver.name for ver in affected_versions] if affected_versions else ['No version']
             
-            # Get comments
-            comments = self.jira_client.comments(issue)
-            if comments:
-                result += f"**Comments ({len(comments)}):**\n"
-                for comment in comments[-5:]:  # Show last 5 comments
-                    result += f"- {comment.author.displayName} ({comment.created}): {comment.body}\n"
-            
-            return [TextContent(type="text", text=result)]
-            
-        except JIRAError as e:
-            return [TextContent(type="text", text=f"JIRA Error: {str(e)}")]
-    
-    async def create_issue(self, arguments: Dict[str, Any]) -> List[TextContent]:
-        """Create a new JIRA issue."""
-        project_key = arguments.get("project_key")
-        issue_type = arguments.get("issue_type")
-        summary = arguments.get("summary")
-        description = arguments.get("description")
-        priority = arguments.get("priority", "Medium")
-        assignee = arguments.get("assignee")
-        
-        try:
-            issue_dict = {
-                'project': {'key': project_key},
-                'summary': summary,
-                'description': description,
-                'issuetype': {'name': issue_type},
-            }
-            
-            if priority:
-                issue_dict['priority'] = {'name': priority}
-            
-            if assignee:
-                issue_dict['assignee'] = {'name': assignee}
-            
-            new_issue = self.jira_client.create_issue(fields=issue_dict)
-            
-            result = f"✅ Issue created successfully!\n\n"
-            result += f"**Issue Key:** {new_issue.key}\n"
-            result += f"**Summary:** {summary}\n"
-            result += f"**Project:** {project_key}\n"
-            result += f"**Issue Type:** {issue_type}\n"
-            result += f"**Priority:** {priority}\n"
-            if assignee:
-                result += f"**Assignee:** {assignee}\n"
-            result += f"**URL:** {self.jira_url}/browse/{new_issue.key}\n"
-            
-            return [TextContent(type="text", text=result)]
-            
-        except JIRAError as e:
-            return [TextContent(type="text", text=f"JIRA Error: {str(e)}")]
-    
-    async def update_issue(self, arguments: Dict[str, Any]) -> List[TextContent]:
-        """Update an existing JIRA issue."""
-        issue_key = arguments.get("issue_key")
-        
-        try:
-            issue = self.jira_client.issue(issue_key)
-            update_fields = {}
-            
-            if "summary" in arguments:
-                update_fields['summary'] = arguments["summary"]
-            
-            if "description" in arguments:
-                update_fields['description'] = arguments["description"]
-            
-            if "assignee" in arguments:
-                update_fields['assignee'] = {'name': arguments["assignee"]}
-            
-            if update_fields:
-                issue.update(fields=update_fields)
-            
-            # Handle status transition separately
-            if "status" in arguments:
-                transitions = self.jira_client.transitions(issue)
-                target_status = arguments["status"]
-                
-                for transition in transitions:
-                    if transition['name'].lower() == target_status.lower():
-                        self.jira_client.transition_issue(issue, transition['id'])
-                        break
-                else:
-                    return [TextContent(type="text", text=f"Status '{target_status}' not available for this issue")]
-            
-            result = f"✅ Issue {issue_key} updated successfully!\n"
-            return [TextContent(type="text", text=result)]
-            
-        except JIRAError as e:
-            return [TextContent(type="text", text=f"JIRA Error: {str(e)}")]
-    
-    async def add_comment(self, arguments: Dict[str, Any]) -> List[TextContent]:
-        """Add a comment to a JIRA issue."""
-        issue_key = arguments.get("issue_key")
-        comment_text = arguments.get("comment")
-        
-        try:
-            self.jira_client.add_comment(issue_key, comment_text)
-            result = f"✅ Comment added to {issue_key} successfully!"
-            return [TextContent(type="text", text=result)]
-            
-        except JIRAError as e:
-            return [TextContent(type="text", text=f"JIRA Error: {str(e)}")]
-    
-    
-    async def find_stale_issues(self, arguments: Dict[str, Any]) -> List[TextContent]:
-        """Find issues with assignees where the latest comment is older than specified days."""
-        from datetime import datetime, timedelta
-        
-        project_key = arguments.get("project_key")
-        days_threshold = arguments.get("days_threshold", 14)
-        include_no_comments = arguments.get("include_no_comments", True)
-        status_filter = arguments.get("status_filter")
-        affects_versions = arguments.get("affects_versions")
-        
-        try:
-            # Build JQL query
-            jql_parts = [
-                f'project = "{project_key}"',
-                'assignee is not EMPTY'
-            ]
-            
-            if status_filter:
-                jql_parts.append(f'status = "{status_filter}"')
-            
-            # Add Affects Version filter if provided
-            if affects_versions:
-                if len(affects_versions) == 1:
-                    jql_parts.append(f'affectedVersion = "{affects_versions[0]}"')
-                else:
-                    version_list = ", ".join([f'"{v}"' for v in affects_versions])
-                    jql_parts.append(f'affectedVersion in ({version_list})')
-            
-            # First, get all issues with assignees
-            base_jql = " AND ".join(jql_parts)
-            issues = self.jira_client.search_issues(base_jql, maxResults=1000, expand='changelog')
-            
-            if not issues:
-                return [TextContent(type="text", text=f"No issues found in project {project_key} with assignees.")]
-            
-            # Calculate the threshold date
-            threshold_date = datetime.now() - timedelta(days=days_threshold)
-            stale_issues = []
-            
-            for issue in issues:
-                try:
-                    # Get comments for this issue
-                    comments = self.jira_client.comments(issue)
-                    
-                    is_stale = False
-                    latest_comment_date = None
-                    
-                    if not comments:
-                        # No comments at all
-                        if include_no_comments:
-                            is_stale = True
-                            latest_comment_date = "No comments"
+            # Get Telco priority from custom field cf[12323649]
+            telco_priority = "None"
+            try:
+                # Access the custom field that contains Telco priority
+                custom_field_value = getattr(issue.fields, 'customfield_12323649', None)
+                if custom_field_value:
+                    if isinstance(custom_field_value, list):
+                        # If it's a list, join the values
+                        telco_priority = ', '.join([str(val) for val in custom_field_value])
                     else:
-                        # Get the latest comment
-                        latest_comment = comments[-1]
-                        # Parse the comment date (JIRA returns ISO format)
-                        comment_date_str = latest_comment.created
-                        # Remove timezone info and microseconds for parsing
-                        if 'T' in comment_date_str:
-                            comment_date_str = comment_date_str.split('T')[0] + 'T' + comment_date_str.split('T')[1][:19]
-                        
-                        try:
-                            latest_comment_date = datetime.fromisoformat(comment_date_str.replace('Z', '+00:00'))
-                            # Convert to naive datetime for comparison
-                            if latest_comment_date.tzinfo:
-                                latest_comment_date = latest_comment_date.replace(tzinfo=None)
-                            
-                            if latest_comment_date < threshold_date:
-                                is_stale = True
-                        except ValueError:
-                            # If we can't parse the date, treat as stale
-                            is_stale = True
-                            latest_comment_date = comment_date_str
-                    
-                    if is_stale:
-                        stale_issues.append({
-                            'issue': issue,
-                            'latest_comment_date': latest_comment_date,
-                            'comments_count': len(comments)
-                        })
-                        
-                except Exception as e:
-                    logger.warning(f"Error processing issue {issue.key}: {str(e)}")
-                    continue
+                        telco_priority = str(custom_field_value)
+            except Exception:
+                telco_priority = "Unable to retrieve"
             
-            if not stale_issues:
-                return [TextContent(type="text", text=f"✅ No stale issues found in project {project_key}. All assigned issues have recent activity!")]
+            result += f"🐛 **{issue.key}**: {issue.fields.summary}\n"
+            result += f"   📋 Status: {issue.fields.status.name}\n"
+            result += f"   👤 Assignee: {getattr(issue.fields.assignee, 'displayName', 'Unassigned')}\n"
+            result += f"   🏷️  Priority: {getattr(issue.fields.priority, 'name', 'None')}\n"
+            result += f"   🎯 Telco Priority: {telco_priority}\n"
+            result += f"   🔧 Components: {', '.join(component_names[:3])}{'...' if len(component_names) > 3 else ''}\n"
+            result += f"   📦 Affects Versions: {', '.join(version_names[:3])}{'...' if len(version_names) > 3 else ''}\n"
+            result += f"   💬 Comments: {comments_count}\n"
             
-            # Format results
-            result = f"🔍 Found {len(stale_issues)} stale issue(s) in project {project_key}:\n"
-            result += f"(Issues with assignees but no comments or comments older than {days_threshold} days)\n\n"
-            
-            for item in stale_issues:
-                issue = item['issue']
-                latest_date = item['latest_comment_date']
-                comments_count = item['comments_count']
-                
-                result += f"**{issue.key}**: {issue.fields.summary}\n"
-                result += f"  📋 Status: {issue.fields.status.name}\n"
-                result += f"  👤 Assignee: {getattr(issue.fields.assignee, 'displayName', 'Unassigned')}\n"
-                result += f"  🏷️  Priority: {getattr(issue.fields.priority, 'name', 'None')}\n"
-                result += f"  💬 Comments: {comments_count}\n"
-                
-                if latest_date == "No comments":
-                    result += f"  🕒 Last Activity: No comments (Created: {issue.fields.created[:10]})\n"
-                else:
-                    if isinstance(latest_date, datetime):
-                        days_old = (datetime.now() - latest_date).days
-                        result += f"  🕒 Last Comment: {latest_date.strftime('%Y-%m-%d %H:%M')} ({days_old} days ago)\n"
-                    else:
-                        result += f"  🕒 Last Comment: {latest_date}\n"
-                
-                result += f"  🔗 URL: {self.jira_url}/browse/{issue.key}\n\n"
-            
-            # Add JQL query for manual use
-            result += f"\n📝 **Manual JQL Query:**\n"
-            result += f"```\n{base_jql}\n```\n"
-            result += f"Note: The comment date filtering is done programmatically as JIRA's JQL has limited comment date filtering capabilities.\n"
-            
-            return [TextContent(type="text", text=result)]
-            
-        except JIRAError as e:
-            return [TextContent(type="text", text=f"JIRA Error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-    
-    async def comment_on_stale_issues(self, arguments: Dict[str, Any]) -> List[TextContent]:
-        """Find stale issues and add comments tagging assignees with flexible targeting options."""
-        from datetime import datetime, timedelta
-        
-        project_key = arguments.get("project_key")
-        days_threshold = arguments.get("days_threshold", 14)
-        exclude_statuses = arguments.get("exclude_statuses", ["Closed", "Release Pending", "On_QA", "Verified"])
-        comment_template = arguments.get("comment_template", "{assignee} Do you have any recent updates on this bug?")
-        mode = arguments.get("mode", "dry_run")
-        target_scope = arguments.get("target_scope", "all_stale")
-        specific_issues = arguments.get("specific_issues", [])
-        affects_versions = arguments.get("affects_versions")
-        
-        try:
-            issues_to_process = []
-            
-            if target_scope == "specific_issues":
-                # Process specific issue keys
-                if not specific_issues:
-                    return [TextContent(type="text", text="❌ No specific issues provided. Please provide issue keys in 'specific_issues' parameter.")]
-                
-                result = f"🎯 Processing {len(specific_issues)} specific issue(s): {', '.join(specific_issues)}\n\n"
-                
-                for issue_key in specific_issues:
-                    try:
-                        issue = self.jira_client.issue(issue_key)
-                        if issue.fields.assignee:  # Only process if has assignee
-                            issues_to_process.append(issue)
-                        else:
-                            result += f"⚠️  Skipping {issue_key}: No assignee\n"
-                    except JIRAError as e:
-                        result += f"❌ Failed to fetch {issue_key}: {str(e)}\n"
-                        
+            if latest_date == "No comments":
+                result += f"   🕒 Last Activity: No comments (Created: {issue.fields.created[:10]})\n"
             else:
-                # Find stale issues automatically
-                if not project_key:
-                    return [TextContent(type="text", text="❌ Project key is required when target_scope is 'all_stale'.")]
-                
-                # Build JQL query excluding specified statuses
-                jql_parts = [
-                    f'project = "{project_key}"',
-                    'assignee is not EMPTY'
-                ]
-                
-                # Add status exclusions
-                if exclude_statuses:
-                    status_exclusion = " AND ".join([f'status != "{status}"' for status in exclude_statuses])
-                    jql_parts.append(f"({status_exclusion})")
-                
-                # Add Affects Version filter if provided
-                if affects_versions:
-                    if len(affects_versions) == 1:
-                        jql_parts.append(f'affectedVersion = "{affects_versions[0]}"')
-                    else:
-                        version_list = ", ".join([f'"{v}"' for v in affects_versions])
-                        jql_parts.append(f'affectedVersion in ({version_list})')
-                
-                base_jql = " AND ".join(jql_parts)
-                all_issues = self.jira_client.search_issues(base_jql, maxResults=1000)
-                
-                if not all_issues:
-                    return [TextContent(type="text", text=f"No active issues found in project {project_key} with assignees.")]
-                
-                # Calculate threshold date and find stale issues
-                threshold_date = datetime.now() - timedelta(days=days_threshold)
-                
-                for issue in all_issues:
-                    try:
-                        comments = self.jira_client.comments(issue)
-                        is_stale = False
-                        
-                        if not comments:
-                            is_stale = True
-                        else:
-                            latest_comment = comments[-1]
-                            comment_date_str = latest_comment.created
-                            
-                            try:
-                                if 'T' in comment_date_str:
-                                    comment_date_str = comment_date_str.split('T')[0] + 'T' + comment_date_str.split('T')[1][:19]
-                                
-                                latest_comment_date = datetime.fromisoformat(comment_date_str.replace('Z', '+00:00'))
-                                if latest_comment_date.tzinfo:
-                                    latest_comment_date = latest_comment_date.replace(tzinfo=None)
-                                
-                                if latest_comment_date < threshold_date:
-                                    is_stale = True
-                            except ValueError:
-                                is_stale = True
-                        
-                        if is_stale:
-                            issues_to_process.append(issue)
-                            
-                    except Exception as e:
-                        logger.warning(f"Error processing issue {issue.key}: {str(e)}")
-                        continue
-                
-                result = f"🔍 Found {len(issues_to_process)} stale issue(s) in project {project_key}\n"
-                if exclude_statuses:
-                    result += f"Excluding statuses: {', '.join(exclude_statuses)}\n"
-                if affects_versions:
-                    result += f"Filtering by versions: {', '.join(affects_versions)}\n"
-                result += f"Staleness threshold: {days_threshold} days\n\n"
-            
-            if not issues_to_process:
-                return [TextContent(type="text", text=f"✅ No stale issues found to comment on!")]
-            
-            # Format operation mode
-            if mode == "dry_run":
-                result += "🏃‍♂️ **DRY RUN MODE** - No actual comments will be posted\n\n"
-            else:
-                result += "💬 **LIVE MODE** - Comments will be posted to JIRA\n\n"
-            
-            commented_count = 0
-            failed_count = 0
-            skipped_count = 0
-            
-            for issue in issues_to_process:
-                assignee = issue.fields.assignee
-                
-                if not assignee:
-                    result += f"⚠️  **{issue.key}**: Skipping - no assignee\n\n"
-                    skipped_count += 1
-                    continue
-                
-                # Get comment info for context (if not specific issues mode)
-                latest_date = "N/A"
-                comments_count = 0
-                if target_scope == "all_stale":
-                    try:
-                        comments = self.jira_client.comments(issue)
-                        comments_count = len(comments)
-                        if comments:
-                            latest_comment = comments[-1]
-                            comment_date_str = latest_comment.created
-                            try:
-                                if 'T' in comment_date_str:
-                                    comment_date_str = comment_date_str.split('T')[0] + 'T' + comment_date_str.split('T')[1][:19]
-                                latest_date = datetime.fromisoformat(comment_date_str.replace('Z', '+00:00'))
-                                if latest_date.tzinfo:
-                                    latest_date = latest_date.replace(tzinfo=None)
-                            except ValueError:
-                                latest_date = comment_date_str
-                        else:
-                            latest_date = "No comments"
-                    except Exception:
-                        latest_date = "Error retrieving"
-                
-                # Format the comment with assignee mention
-                assignee_mention = f"[~{assignee.name}]" if hasattr(assignee, 'name') else f"@{assignee.displayName}"
-                comment_text = comment_template.format(assignee=assignee_mention)
-                
-                result += f"📋 **{issue.key}**: {issue.fields.summary}\n"
-                result += f"   👤 Assignee: {assignee.displayName}\n"
-                result += f"   📊 Status: {issue.fields.status.name}\n"
-                
-                if target_scope == "all_stale":
-                    result += f"   💬 Comments: {comments_count}\n"
-                    if latest_date == "No comments":
-                        result += f"   🕒 Last Activity: No comments\n"
-                    elif isinstance(latest_date, datetime):
-                        days_old = (datetime.now() - latest_date).days
-                        result += f"   🕒 Last Comment: {latest_date.strftime('%Y-%m-%d')} ({days_old} days ago)\n"
-                    else:
-                        result += f"   🕒 Last Comment: {latest_date}\n"
-                
-                result += f"   💭 Comment to post: \"{comment_text}\"\n"
-                
-                if mode == "live":
-                    try:
-                        # Actually post the comment
-                        self.jira_client.add_comment(issue.key, comment_text)
-                        result += f"   ✅ Comment posted successfully!\n"
-                        commented_count += 1
-                    except JIRAError as e:
-                        result += f"   ❌ Failed to post comment: {str(e)}\n"
-                        failed_count += 1
+                if isinstance(latest_date, datetime):
+                    days_old = (datetime.now() - latest_date).days
+                    result += f"   🕒 Last Comment: {latest_date.strftime('%Y-%m-%d %H:%M')} ({days_old} days ago)\n"
                 else:
-                    result += f"   🔍 Would post comment (dry run mode)\n"
-                
-                result += f"   🔗 URL: {self.jira_url}/browse/{issue.key}\n\n"
+                    result += f"   🕒 Last Comment: {latest_date}\n"
             
-            # Summary
-            result += "=" * 50 + "\n"
-            result += f"📊 **Summary:**\n"
-            result += f"   Issues processed: {len(issues_to_process)}\n"
-            
-            if mode == "live":
-                result += f"   ✅ Successfully commented: {commented_count}\n"
-                if failed_count > 0:
-                    result += f"   ❌ Failed to comment: {failed_count}\n"
-                if skipped_count > 0:
-                    result += f"   ⚠️  Skipped (no assignee): {skipped_count}\n"
-            else:
-                result += f"   🔍 Ready to comment: {len(issues_to_process) - skipped_count}\n"
-                if skipped_count > 0:
-                    result += f"   ⚠️  Would skip (no assignee): {skipped_count}\n"
-                result += f"\n💡 **Tip:** Set 'mode': 'live' to actually post comments\n"
-            
-            return [TextContent(type="text", text=result)]
-            
-        except JIRAError as e:
-            return [TextContent(type="text", text=f"JIRA Error: {str(e)}")]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-    
-    async def run(self):
-        """Run the MCP server."""
-        async with stdio_server() as (read_stream, write_stream):
-            # Create notification options
-            notification_options = NotificationOptions()
-            
-            await self.server.run(
-                read_stream,
-                write_stream,
-                InitializationOptions(
-                    server_name="mcp-jira-server",
-                    server_version="1.0.0",
-                    capabilities=self.server.get_capabilities(
-                        notification_options=notification_options,
-                        experimental_capabilities={},
-                    ),
-                ),
-            )
+            result += f"   🔗 URL: {os.getenv('JIRA_URL')}/browse/{issue.key}\n\n"
+        
+        # Add JQL query for manual use
+        result += f"\n📝 **JQL Query Used:**\n"
+        result += f"```\n{base_jql}\n```\n"
+        result += f"\n💡 **Note:** Comment date filtering is done programmatically after JQL search.\n"
+        result += f"🎯 **Hardcoded Criteria:** Telco Priority-1/2 bugs in OCPBUGS/MGMT projects with specific components.\n"
+        
+        return result
+        
+    except JIRAError as e:
+        return f"JIRA Error: {str(e)}"
+    except Exception as e:
+        return f"Error: {str(e)}"
 
 
 async def main():
-    """Main function to run the MCP JIRA server."""
+    """Main function to run the FastMCP JIRA server."""
     try:
         # Check for required environment variables
-        required_vars = ["JIRA_URL", "JIRA_USERNAME", "JIRA_TOKEN"]
+        required_vars = ["JIRA_URL", "JIRA_TOKEN"]
         missing_vars = [var for var in required_vars if not os.getenv(var)]
         
         if missing_vars:
-            print("❌ Missing required environment variables:")
+            print("❌ Missing required environment variables:", file=sys.stderr)
             for var in missing_vars:
-                print(f"  - {var}")
-            print("\nPlease set these environment variables before running the server.")
-            print("\nExample:")
-            print("export JIRA_URL='https://your-domain.atlassian.net'")
-            print("export JIRA_USERNAME='your-email@example.com'")
-            print("export JIRA_TOKEN='your-api-token'")
+                print(f"  - {var}", file=sys.stderr)
+            print("\nPlease set these environment variables before running the server.", file=sys.stderr)
+            print("\nExample:", file=sys.stderr)
+            print("export JIRA_URL='https://your-domain.atlassian.net'", file=sys.stderr)
+            print("export JIRA_TOKEN='your-bearer-token'", file=sys.stderr)
             return
         
-        print("🚀 Starting MCP JIRA Server...")
-        print(f"JIRA URL: {os.getenv('JIRA_URL')}")
-        print(f"Username: {os.getenv('JIRA_USERNAME')}")
+        print("🚀 Starting FastMCP JIRA Server...", file=sys.stderr)
+        print(f"JIRA URL: {os.getenv('JIRA_URL')}", file=sys.stderr)
+        print(f"Authentication: Bearer Token", file=sys.stderr)
         
-        server = MCPJiraServer()
-        await server.run()
+        # Try using stdio mode instead
+        await app.run_stdio_async()
         
     except KeyboardInterrupt:
-        print("\n🛑 Server stopped by user")
+        print("\n🛑 Server stopped by user", file=sys.stderr)
     except Exception as e:
-        print(f"❌ Server error: {str(e)}")
+        print(f"❌ Server error: {str(e)}", file=sys.stderr)
         import traceback
-        print("Full traceback:")
+        print("Full traceback:", file=sys.stderr)
         traceback.print_exc()
         raise
 
@@ -858,13 +584,22 @@ async def main():
 def main_sync():
     """Synchronous wrapper for main function with better error handling."""
     try:
+        # Check if there's already an event loop running
+        try:
+            loop = asyncio.get_running_loop()
+            print("❌ AsyncIO loop already running. Please run from command line or restart your environment.", file=sys.stderr)
+            return
+        except RuntimeError:
+            # No loop running, safe to start
+            pass
+        
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n🛑 Server stopped by user")
+        print("\n🛑 Server stopped by user", file=sys.stderr)
     except Exception as e:
-        print(f"❌ Failed to start server: {str(e)}")
+        print(f"❌ Failed to start server: {str(e)}", file=sys.stderr)
         import traceback
-        print("Full traceback:")
+        print("Full traceback:", file=sys.stderr)
         traceback.print_exc()
 
 

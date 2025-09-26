@@ -39,8 +39,7 @@ prompt_for_var() {
 
 # Prompt for required environment variables
 prompt_for_var "JIRA_URL" "Your JIRA instance URL (e.g., https://your-domain.atlassian.net)"
-prompt_for_var "JIRA_USERNAME" "Your JIRA username/email"
-prompt_for_var "JIRA_TOKEN" "Your JIRA API token (generate at: Account Settings > Security > API tokens)"
+prompt_for_var "JIRA_TOKEN" "Your JIRA Bearer token (generate at: Settings > Personal Access Tokens)"
 
 echo ""
 echo "🎉 Environment setup complete!"

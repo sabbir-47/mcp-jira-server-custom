@@ -1,13 +1,11 @@
-# MCP JIRA Server Requirements
+# FastMCP JIRA Server Requirements
 # Install with: pip install -r requirements.txt
 
-# Model Context Protocol
-mcp>=1.0.0
+# FastMCP - Modern MCP framework
+fastmcp>=0.4.0
 
 # JIRA Python library
 jira>=3.5.0
 
-# Additional dependencies
-asyncio-mqtt>=0.16.0  # For async operations
-python-dotenv>=1.0.0  # For environment variable management
-typing-extensions>=4.8.0  # For enhanced type hints
+# Additional dependencies (optional)
+python-dotenv>=1.0.0  # For environment variable management if needed
