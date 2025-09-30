@@ -359,20 +359,51 @@ async def jira_find_stale_issues(
     include_no_comments: bool = True,
     affects_versions: List[str] = [],
     max_results: int = 50,
-    additional_components: List[str] = []
+    additional_components: List[str] = [],
+    additional_projects: List[str] = [],
+    override_projects: List[str] = [],
+    strict_bugs_only: bool = True
 ) -> str:
-    """Find stale Telco priority bugs with no recent comments (hardcoded criteria for OCPBUGS/MGMT)."""
+    """Find stale Telco priority bugs with no recent comments.
+    
+    Args:
+        days_threshold: Days threshold for staleness (default: 14)
+        include_no_comments: Include issues with no comments (default: True)
+        affects_versions: Filter by specific versions (default: [])
+        max_results: Maximum number of results (default: 50)
+        additional_components: Additional components to include (default: [])
+        additional_projects: Additional projects to include with defaults (default: [])
+        override_projects: If specified, search ONLY these projects (ignores defaults) (default: [])
+        strict_bugs_only: Only include bug-type issues, exclude stories/epics/tasks (default: True)
+    """
     if not jira_client:
         await init_jira_client()
     
     try:
-        # HARDCODED DIRECTIVE 1: Base project and priority criteria
+        # PROJECT HANDLING: Flexible project selection
+        if override_projects:
+            # User wants to search ONLY specific projects
+            project_list = ", ".join(override_projects)
+            project_clause = f'project in ({project_list})'
+        else:
+            # Use default projects + any additional ones
+            default_projects = ["OCPBUGS"]
+            all_projects = default_projects + additional_projects
+            project_list = ", ".join(all_projects)
+            project_clause = f'project in ({project_list})'
+        
+        # BASE JQL with flexible projects and strict bug filtering
         jql_parts = [
-            'project in (OCPBUGS, MGMT)',
-            'cf[12323649] in ("Telco:Priority-1", "Telco:Priority-2", "Telco:Priority-3")',
+            project_clause,
             'status not in (Verified, ON_QA, Closed, "Release Pending")',
             'assignee is not EMPTY'
         ]
+        
+        jql_parts.append('cf[12323649] in ("Telco:Priority-1", "Telco:Priority-2", "Telco:Priority-3")')
+        
+        # STRICT BUG FILTERING: Only include bug-type issues
+        if strict_bugs_only:
+            jql_parts.append('issuetype = Bug')
         
         # HARDCODED DIRECTIVE 2: Default components
         default_components = [
@@ -406,7 +437,13 @@ async def jira_find_stale_issues(
         
         logger.info(f"Executing JQL: {base_jql}")
         await rate_limit()
-        issues = jira_client.search_issues(base_jql, maxResults=max_results, expand='changelog')
+        # Single optimized call: get issues with comments and all needed fields
+        issues = jira_client.search_issues(
+            base_jql, 
+            maxResults=max_results, 
+            expand='changelog,comments',  # Get comments in the same call!
+            fields='summary,status,assignee,reporter,priority,issuetype,project,created,updated,components,versions,comment,customfield_12323649'
+        )
         
         if not issues:
             return "✅ No Telco priority issues found matching the criteria."
@@ -415,10 +452,23 @@ async def jira_find_stale_issues(
         threshold_date = datetime.now() - timedelta(days=days_threshold)
         stale_issues = []
         
+        # Build search summary
+        if override_projects:
+            projects_used = override_projects
+            project_mode = f"🎯 Override mode: ONLY {', '.join(override_projects)}"
+        else:
+            projects_used = ["OCPBUGS", "MGMT"] + additional_projects
+            if additional_projects:
+                project_mode = f"📦 Default projects (OCPBUGS, MGMT) + {', '.join(additional_projects)}"
+            else:
+                project_mode = f"📦 Default projects: OCPBUGS, MGMT"
+        
         result_preview = f"🔍 **Telco Priority Stale Issues Search**\n"
-        result_preview += f"📊 Processing {len(issues)} issues (limited to {max_results} for performance & rate limiting)\n"
+        result_preview += f"📊 Found {len(issues)} issues (limited to {max_results} for performance)\n"
         result_preview += f"⏰ Staleness threshold: {days_threshold} days\n"
-        result_preview += f"🐌 Rate limited: 2s delay between API calls to protect issues.redhat.com\n"
+        result_preview += f"{project_mode}\n"
+        result_preview += f"🐛 Issue types: {'Bugs only' if strict_bugs_only else 'All types'}\n"
+        result_preview += f"⚡ Optimized: Single API call with expanded fields\n"
         if affects_versions:
             result_preview += f"🎯 Affects versions: {', '.join(affects_versions)} (including .z variants)\n"
         if additional_components:
@@ -427,15 +477,16 @@ async def jira_find_stale_issues(
         
         for idx, issue in enumerate(issues):
             try:
-                # Add rate limiting before each API call
-                await rate_limit()
+                # Get comments from the already-loaded issue (no additional API call needed!)
+                comments = getattr(issue.fields, 'comment', None)
+                if comments and hasattr(comments, 'comments'):
+                    comments = comments.comments
+                else:
+                    comments = []
                 
-                # Get comments for this issue
-                comments = jira_client.comments(issue)
-                
-                # Log progress every 3 issues for better visibility
-                if (idx + 1) % 3 == 0:
-                    logger.info(f"Processed {idx + 1}/{len(issues)} Telco priority issues... (faster rate limiting)")
+                # Log progress every 5 issues (now much faster since no API calls in loop)
+                if (idx + 1) % 5 == 0:
+                    logger.info(f"Analyzed {idx + 1}/{len(issues)} Telco priority issues (no API calls needed)")
                 
                 is_stale = False
                 latest_comment_date = None
@@ -537,7 +588,12 @@ async def jira_find_stale_issues(
         result += f"\n📝 **JQL Query Used:**\n"
         result += f"```\n{base_jql}\n```\n"
         result += f"\n💡 **Note:** Comment date filtering is done programmatically after JQL search.\n"
-        result += f"🎯 **Hardcoded Criteria:** Telco Priority-1/2 bugs in OCPBUGS/MGMT projects with specific components.\n"
+        result += f"🎯 **Search Criteria:**\n"
+        result += f"   • Projects: {', '.join(projects_used)}\n"
+        result += f"   • Issue Types: {'Bugs only' if strict_bugs_only else 'All types'}\n"
+        result += f"   • Telco Priority: 1, 2, 3\n"
+        result += f"   • Status: Excluding Verified, ON_QA, Closed, Release Pending\n"
+        result += f"   • Assignment: Only assigned issues\n"
         
         return result
         
