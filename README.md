@@ -59,30 +59,22 @@ Ask Claude/Cursor in natural language:
 
 ### Claude-CLI
 Add to the mcp server to claude:
-```json
+```bash
 claude mcp add "custom-jira" "./bin/python" "<PATH>/mcp_jira_server.py"
 ```
 
 ### Verification
 Add to the mcp server to claude:
-```json
-> claude mcp get custom-jira
+```bash
+>> claude mcp get jira 
 ⏺ Bash(claude mcp get jira)
-  ⎿  custom-jira:                                                 
+  ⎿  jira:                                                 
        Scope: Local config (private to you in this project)
        Status: ✓ Connected
      … +6 lines (ctrl+o to expand)
 
-⏺ The MCP server is named "jira" (not "custom-jira"). Here are the details:
-
-  - Scope: Local config (private to this project)
-  - Status: ✓ Connected
-  - Type: stdio
-  - Command: ./bin/python
-  - Args: mcp_jira_server.py
-  - Environment: (none configured)
-
-  The server is running locally using the Python script in this project and is successfully connected.
+⏺ The jira MCP server is configured locally for this project, running ./bin/python 
+  mcp_jira_server.py via stdio and is currently connected.
 ```
 
 ## 🔍 Troubleshooting

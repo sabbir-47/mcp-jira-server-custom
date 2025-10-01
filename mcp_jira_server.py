@@ -457,11 +457,11 @@ async def jira_find_stale_issues(
             projects_used = override_projects
             project_mode = f"🎯 Override mode: ONLY {', '.join(override_projects)}"
         else:
-            projects_used = ["OCPBUGS", "MGMT"] + additional_projects
+            projects_used = ["OCPBUGS"] + additional_projects
             if additional_projects:
-                project_mode = f"📦 Default projects (OCPBUGS, MGMT) + {', '.join(additional_projects)}"
+                project_mode = f"📦 Default projects (OCPBUGS) + {', '.join(additional_projects)}"
             else:
-                project_mode = f"📦 Default projects: OCPBUGS, MGMT"
+                project_mode = f"📦 Default projects: OCPBUGS"
         
         result_preview = f"🔍 **Telco Priority Stale Issues Search**\n"
         result_preview += f"📊 Found {len(issues)} issues (limited to {max_results} for performance)\n"
