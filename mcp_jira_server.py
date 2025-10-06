@@ -138,14 +138,27 @@ async def jira_search_issues(jql: str, max_results: int = 50) -> str:
 
 
 @app.tool()
-async def jira_get_issue(issue_key: str) -> str:
-    """Get detailed information about a specific JIRA issue."""
+async def jira_get_issue(issue_key: str, include_comment_analysis: bool = False) -> str:
+    """
+    Get detailed information about a specific JIRA issue.
+    
+    Args:
+        issue_key: The JIRA issue key (e.g., 'OCPBUGS-12345')
+        include_comment_analysis: Include AI-powered comment analysis (default: False)
+    
+    Returns:
+        Detailed issue information with optional comment analysis
+    """
     if not jira_client:
         await init_jira_client()
     
     try:
         await rate_limit()
-        issue = jira_client.issue(issue_key)
+        # Fetch issue with comments if analysis is requested
+        if include_comment_analysis:
+            issue = jira_client.issue(issue_key, expand='comments')
+        else:
+            issue = jira_client.issue(issue_key)
         
         result = f"**Issue: {issue.key}**\n\n"
         result += f"**Summary:** {issue.fields.summary}\n"
@@ -156,23 +169,174 @@ async def jira_get_issue(issue_key: str) -> str:
         result += f"**Issue Type:** {issue.fields.issuetype.name}\n"
         result += f"**Project:** {issue.fields.project.name}\n"
         result += f"**Created:** {issue.fields.created}\n"
-        result += f"**Updated:** {issue.fields.updated}\n\n"
+        result += f"**Updated:** {issue.fields.updated}\n"
+        
+        # Add Components and Versions info
+        if hasattr(issue.fields, 'components') and issue.fields.components:
+            components = [comp.name for comp in issue.fields.components]
+            result += f"**Components:** {', '.join(components)}\n"
+        
+        if hasattr(issue.fields, 'versions') and issue.fields.versions:
+            versions = [ver.name for ver in issue.fields.versions]
+            result += f"**Affects Versions:** {', '.join(versions)}\n"
+        
+        # Add Telco Priority if available
+        try:
+            telco_priority = getattr(issue.fields, 'customfield_12323649', None)
+            if telco_priority:
+                if isinstance(telco_priority, list):
+                    telco_priority = ', '.join([str(val) for val in telco_priority])
+                result += f"**Telco Priority:** {telco_priority}\n"
+        except Exception:
+            pass
+        
+        result += "\n"
         
         if hasattr(issue.fields, 'description') and issue.fields.description:
             result += f"**Description:**\n{issue.fields.description}\n\n"
         
-        # Get comments
-        await rate_limit()
-        comments = jira_client.comments(issue)
-        if comments:
-            result += f"**Comments ({len(comments)}):**\n"
-            for comment in comments[-5:]:  # Show last 5 comments
-                result += f"- {comment.author.displayName} ({comment.created}): {comment.body}\n"
+        # Handle comments with optional analysis
+        if include_comment_analysis and hasattr(issue.fields, 'comment') and issue.fields.comment.comments:
+            comments = issue.fields.comment.comments
+            result += f"**Comments Analysis ({len(comments)} total):**\n"
+            
+            # Perform comment analysis
+            threshold_date = datetime.now() - timedelta(days=5)  # Use 5-day threshold for analysis
+            analysis = analyze_comments(comments, threshold_date)
+            
+            # Display analysis results
+            result += f"📊 **Analysis Summary:**\n"
+            result += f"   • Total Comments: {analysis['total_comments']}\n"
+            result += f"   • Unique Authors: {analysis['unique_authors']}\n"
+            result += f"   • Activity Pattern: {analysis['activity_pattern']}\n"
+            result += f"   • Last Activity: {analysis['last_activity']}\n"
+            
+            if analysis['keywords_found']:
+                result += f"   • Keywords Found: {', '.join(analysis['keywords_found'][:5])}\n"
+            
+            if analysis['escalation_indicators']:
+                result += f"   • 🚨 Escalation Indicators: {', '.join(analysis['escalation_indicators'])}\n"
+            
+            result += "\n**Recent Comments:**\n"
+            for comment_data in analysis['recent_comments']:
+                result += f"- **{comment_data['author']}** ({comment_data['date']}): {comment_data['preview']}\n"
+                
+        elif not include_comment_analysis:
+            # Simple comment display without analysis
+            await rate_limit()
+            comments = jira_client.comments(issue)
+            if comments:
+                result += f"**Comments ({len(comments)}):**\n"
+                for comment in comments[-5:]:  # Show last 5 comments
+                    result += f"- {comment.author.displayName} ({comment.created}): {comment.body[:200]}{'...' if len(comment.body) > 200 else ''}\n"
+        else:
+            result += "**Comments:** No comments found.\n"
         
         return result
         
     except JIRAError as e:
         return f"JIRA Error: {str(e)}"
+
+
+@app.tool()
+async def jira_analyze_issue_comments(issue_key: str, days_threshold: int = 5) -> str:
+    """
+    Perform detailed comment analysis on a specific JIRA issue.
+    
+    This is a standalone tool that focuses purely on comment analysis,
+    providing rich insights that can be used by AI assistants for understanding
+    issue context, urgency, and activity patterns.
+    
+    Args:
+        issue_key: The JIRA issue key (e.g., 'OCPBUGS-12345')
+        days_threshold: Number of days to consider for staleness analysis (default: 5)
+    
+    Returns:
+        Detailed comment analysis with keywords, patterns, and insights
+    """
+    if not jira_client:
+        await init_jira_client()
+    
+    try:
+        await rate_limit()
+        # Fetch issue with comments expanded
+        issue = jira_client.issue(issue_key, expand='comments')
+        
+        if not hasattr(issue.fields, 'comment') or not issue.fields.comment.comments:
+            return f"**Issue {issue_key}: No Comments Analysis**\n\nNo comments found for analysis."
+        
+        comments = issue.fields.comment.comments
+        threshold_date = datetime.now() - timedelta(days=days_threshold)
+        
+        # Perform detailed comment analysis
+        analysis = analyze_comments(comments, threshold_date)
+        
+        # Build comprehensive analysis report
+        result = f"**🔍 Comment Analysis for {issue_key}**\n"
+        result += f"**Issue:** {issue.fields.summary}\n"
+        result += f"**Status:** {issue.fields.status.name}\n\n"
+        
+        result += f"📊 **Analysis Overview:**\n"
+        result += f"   • Total Comments: {analysis['total_comments']}\n"
+        result += f"   • Unique Authors: {analysis['unique_authors']}\n"
+        result += f"   • Activity Pattern: {analysis['activity_pattern']}\n"
+        result += f"   • Last Activity: {analysis['last_activity']}\n"
+        result += f"   • Analysis Threshold: {days_threshold} days\n\n"
+        
+        # Keywords Analysis
+        if analysis['keywords_found']:
+            result += f"🔑 **Keywords Detected:**\n"
+            urgency_keywords = [k for k in analysis['keywords_found'] if k.startswith('URGENT:')]
+            status_keywords = [k for k in analysis['keywords_found'] if k.startswith('STATUS:')]
+            problem_keywords = [k for k in analysis['keywords_found'] if k.startswith('PROBLEM:')]
+            
+            if urgency_keywords:
+                result += f"   🚨 Urgency: {', '.join([k.split(':')[1] for k in urgency_keywords])}\n"
+            if status_keywords:
+                result += f"   ✅ Status: {', '.join([k.split(':')[1] for k in status_keywords])}\n"
+            if problem_keywords:
+                result += f"   ⚠️ Problems: {', '.join([k.split(':')[1] for k in problem_keywords])}\n"
+            result += "\n"
+        
+        # Escalation Indicators
+        if analysis['escalation_indicators']:
+            result += f"🚨 **Escalation Indicators:**\n"
+            for indicator in analysis['escalation_indicators']:
+                result += f"   • {indicator}\n"
+            result += "\n"
+        
+        # Recent Comments Analysis
+        if analysis['recent_comments']:
+            result += f"💬 **Recent Comments Analysis:**\n"
+            for i, comment_data in enumerate(analysis['recent_comments'], 1):
+                result += f"   **{i}. {comment_data['author']}** ({comment_data['date']})\n"
+                result += f"      Length: {comment_data['length']} chars\n"
+                result += f"      Preview: {comment_data['preview']}\n\n"
+        
+        # AI Assistant Recommendations
+        result += f"🤖 **AI Assistant Insights:**\n"
+        
+        if analysis['escalation_indicators']:
+            result += f"   • ⚠️ This issue shows escalation patterns - may need management attention\n"
+        
+        if 'URGENT' in str(analysis['keywords_found']):
+            result += f"   • 🚨 Urgency keywords detected - prioritize this issue\n"
+        
+        if analysis['unique_authors'] > 5:
+            result += f"   • 👥 High collaboration ({analysis['unique_authors']} authors) - complex issue\n"
+        
+        if analysis['total_comments'] > 15:
+            result += f"   • 💬 High activity ({analysis['total_comments']} comments) - active discussion\n"
+        
+        if analysis['activity_pattern'] == 'Single comment':
+            result += f"   • 📝 Single comment - may need triage or follow-up\n"
+        
+        return result
+        
+    except JIRAError as e:
+        return f"JIRA Error: {str(e)}"
+    except Exception as e:
+        return f"Error analyzing comments: {str(e)}"
 
 
 @app.tool()
