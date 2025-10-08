@@ -8,6 +8,12 @@ This project provides a powerful **MCP JIRA Server** (`mcp_jira_server.py`) - a 
 
 ## 📋 Features
 
+### 🏢 Multi-Team Support (NEW!)
+- **Team Configurations** - Pre-configured settings for Deployment, PTP, and Networking teams
+- **Custom JQL Queries** - Teams can define complex custom JQL (e.g., PTP's backport stories + bugs)
+- **Team-Specific Defaults** - Each team has its own projects, components, and priority filters
+- **Easy Extensibility** - Add new teams by updating `team_configs.py` only
+
 ### Core MCP Tools
 - 🔍 **Search Issues** - JQL-based issue searching with flexible filters
 - 📋 **Get Issue Details** - Comprehensive issue information with optional comment analysis
@@ -15,8 +21,9 @@ This project provides a powerful **MCP JIRA Server** (`mcp_jira_server.py`) - a 
 - ✨ **Create Issues** - New issue creation with full metadata support
 - 📝 **Update Issues** - Modify existing issues and status transitions
 - 💬 **Add Comments** - Smart commenting with assignee mentions and dry-run/live modes
-- 🕒 **Find Stale Issues** - Advanced stale issue detection with component/project filtering
+- 🕒 **Find Stale Issues** - Advanced stale issue detection with **team-based filtering**
 - 📊 **Generate Reports** - Professional HTML reports with interactive charts and executive summaries
+- 🏢 **List Teams** - Discover available teams and their configurations
 
 
 ## 🛠️ Setup
@@ -32,6 +39,54 @@ export JIRA_TOKEN="your-bearer-token"  # Get from JIRA → Settings → Personal
 # Run server
 python mcp_jira_server.py
 ```
+
+## 🏢 Multi-Team Configuration
+
+The server supports multiple teams with their own configurations:
+
+### Available Teams
+
+| Team | ID | Configuration | JQL Type |
+|------|----|--------------| ---------|
+| **Deployment** | `deployment` | GitOps ZTP, Bare Metal, SR-IOV, oc components | Standard |
+| **PTP** | `ptp` | PTP, Cloud Events, HW Event components | Custom JQL |
+| **Networking** | `networking` | Placeholder (to be configured) | TBD |
+
+### Using Team Configurations
+
+**List Available Teams:**
+```
+"What teams are available?"
+"Show me team configurations"
+```
+
+**Use Specific Team:**
+```
+"Find PTP stale bugs in 4.18"
+"Generate deployment team report for 4.16"
+```
+
+**Add a New Team:**
+
+Edit `team_configs.py`:
+```python
+NEW_TEAM = TeamConfig(
+    team_name="Storage Team",
+    team_id="storage",
+    default_projects=["OCPBUGS"],
+    default_components=["Storage / OCS", "Storage / Ceph"],
+    priority_field_id="customfield_12323649",
+    priority_values=["Telco:Priority-1", "Telco:Priority-2"],
+    report_title_template="Storage {components} Analysis",
+    description="Storage infrastructure components",
+    custom_jql_base=None  # Optional: custom JQL like PTP team
+)
+
+# Add to registry
+TEAM_REGISTRY["storage"] = NEW_TEAM
+```
+
+For detailed team configuration guide, see [`TEAM_CONFIGURATION.md`](TEAM_CONFIGURATION.md).
 
 ## 🎯 Usage Examples
 
@@ -57,7 +112,16 @@ python mcp_jira_server.py
 
 ### 🕒 Stale Issues Detection
 
-**Basic Stale Issues:**
+**Multi-Team Support:**
+```
+"List available teams"
+"What teams can I monitor?"
+"Find PTP stale bugs with no comments in last 7 days"
+"Find deployment stale issues in 4.18 with no comments over 5 days"
+"Show me networking team stale bugs"
+```
+
+**Basic Stale Issues (Deployment Team - Default):**
 ```
 "Find stale bugs with no comments in the last 5 days"
 "Show me issues that haven't been updated in 7 days"
@@ -123,91 +187,35 @@ python mcp_jira_server.py
 
 ## 📊 HTML Report Generation
 
-### Sample Report
+### Report Features
+- **📊 Interactive Charts** - Issue status distribution, age analysis, release impact
+- **📋 Detailed Tables** - Grouped by Telco priority and release version  
+- **🔍 Issue Links** - Direct links to JIRA issues
+- **🎨 Professional Styling** - Clean, modern design with color-coded status
+- **💾 Export Ready** - Save as HTML for sharing with stakeholders
+- **📈 Executive Summary** - Configurable high-level overview with AI-generated insights
+- **🎯 Key Findings** - Customizable bullet points for quick takeaways
 
-**📊 Executive Dashboard View:**
-```
-┌─────────────────────────────────────────────────────────────┐
-│  GitOps ZTP Stale Issues Analysis - Executive Dashboard     │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  📋 Executive Summary                                       │
-│  Current State: 16 out of 20 issues (80%) in stale state  │
-│  Critical Risk: 7 issues (44%) never triaged               │
-│  Business Impact: 367-day abandoned issue needs closure    │
-│                                                             │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐          │
-│  │   16    │ │   80%   │ │   20    │ │   5+    │          │
-│  │ Stale   │ │ Stale   │ │ Total   │ │ Days    │          │
-│  │ Issues  │ │ Rate    │ │Analyzed │ │Threshold│          │
-│  └─────────┘ └─────────┘ └─────────┘ └─────────┘          │
-│                                                             │
-│  📊 Interactive Charts: [Status] [Age] [Release Impact]    │
-│                                                             │
-│  🚨 Critical Actions Required:                             │
-│  • Close OCPBUGS-42657 (367 days old)                     │
-│  • Verify 3 MODIFIED issues (108+ days stale)             │
-│  • Triage 7 issues with zero comments                     │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+### Report Structure
+- **Executive Summary** with configurable AI-generated content
+- **Interactive Charts** (Status Distribution, Age Analysis, Release Impact)
+- **Detailed Analysis** tables grouped by priority and release
+- **Analysis Parameters** showing search criteria used
 
-**📁 Report Location:** `report/stale_issues_report.html`  
-**🌐 View:** Open in any web browser for full interactive experience  
+### Generated Report Location
+Reports are saved to `report/` directory with timestamps and version info in filename.
 
-
-## 🧠 AI-Powered Comment Analysis
-
-The MCP server includes sophisticated comment analysis that provides actionable insights:
-
-### Analysis Features
-- **🔑 Keyword Detection** - Identifies urgency, status, and problem indicators
-- **📊 Activity Patterns** - Categorizes comment frequency and engagement
-- **🚨 Escalation Detection** - Flags issues requiring management attention
-- **👥 Author Analysis** - Tracks unique contributors and collaboration patterns
-- **⏰ Timeline Analysis** - Maps comment activity over time
-
-### Sample Comment Analysis Output
-```
-🔍 Comment Analysis for OCPBUGS-12345
-Issue: ZTP spoke cluster creation fails intermittently
-Status: MODIFIED
-
-📊 Analysis Overview:
-   • Total Comments: 8
-   • Unique Authors: 3
-   • Activity Pattern: Moderate activity
-   • Last Activity: 2024-10-01T14:30:00Z
-
-🔑 Keywords Detected:
-   🚨 Urgency: critical, blocker
-   ✅ Status: workaround, patch
-   ⚠️ Problems: failing, error
-
-🚨 Escalation Indicators:
-   • Recent escalation language detected
-
-💬 Recent Comments Analysis:
-   1. John Doe (2024-10-01): This is still failing after the patch...
-   2. Jane Smith (2024-09-28): Applied workaround but need permanent fix...
-
-🤖 AI Assistant Insights:
-   • 🚨 Urgency keywords detected - prioritize this issue
-   • ⚠️ This issue shows escalation patterns - may need management attention
-   • 👥 High collaboration (3 authors) - complex issue
-```
-
-This analysis helps AI assistants and users quickly understand issue context, urgency levels, and required actions.
+**Example:** `report/stale_issues_4.16_4.18_report.html`
 
 ## ⭐ Key Features
 
-- **🧠 AI-Powered Analysis** - Intelligent comment analysis with keyword detection
+- **🏢 Multi-Team Support** - Pre-configured teams with custom JQL queries
 - **📊 Executive Reports** - Professional HTML reports with interactive charts
-- **🕒 Advanced Stale Detection** - Flexible project/component/release filtering
+- **🕒 Advanced Stale Detection** - Team-based filtering with flexible project/component/release options
 - **💬 Smart Comments** - Assignee mentions, dry-run preview, live posting
-- **⚡ High Performance** - Optimized API calls (96% fewer requests)
+- **⚡ High Performance** - Optimized API calls with rate limiting
 - **🛡️ Safety First** - Dry-run by default, secure bearer token authentication
-- **🔧 Modular Design** - Reusable comment analysis across all tools
+- **🔧 Modular Design** - Easy extensibility via `team_configs.py`
 
 ## 🔧 Configuration
 
@@ -242,14 +250,15 @@ Add to the mcp server to claude:
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
+| `jira_list_teams` | **NEW!** List configured teams | None |
 | `jira_search_issues` | Search issues with JQL | `jql`, `max_results` |
 | `jira_get_issue` | Get detailed issue info | `issue_key`, `include_comment_analysis` |
 | `jira_analyze_issue_comments` | Pure comment analysis | `issue_key`, `days_threshold` |
 | `jira_create_issue` | Create new issues | `project_key`, `summary`, `description` |
 | `jira_update_issue` | Update existing issues | `issue_key`, `fields`, `transition` |
 | `jira_add_comment` | Add comments with mentions | `issue_key`, `comment`, `mention_assignee`, `mode` |
-| `jira_find_stale_issues` | Find stale issues | `days_threshold`, `affects_versions`, `override_components` |
-| `jira_generate_stale_issues_report` | Generate HTML reports | `days_threshold`, `affects_versions`, `report_filename` |
+| `jira_find_stale_issues` | Find stale issues | `days_threshold`, `affects_versions`, **`team_id`**, `override_components` |
+| `jira_generate_stale_issues_report` | Generate HTML reports | `days_threshold`, `affects_versions`, **`team_id`**, `report_filename`, `executive_summary`, `key_findings` |
 
 
 ---
