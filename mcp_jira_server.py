@@ -15,6 +15,7 @@ Requirements:
 import asyncio
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta
@@ -518,6 +519,234 @@ async def jira_add_comment(
         return f"JIRA Error: {str(e)}"
 
 
+def parse_stale_issues_data(stale_data: str) -> Dict[str, Any]:
+    """
+    Parse the stale issues output data and organize it by Telco priority and release.
+    
+    Args:
+        stale_data: The raw output from _find_stale_issues_core function
+        
+    Returns:
+        Dictionary containing parsed metrics and organized issues
+    """
+    lines = stale_data.split('\n')
+    
+    # Extract summary information
+    total_stale = 0
+    total_analyzed = 0
+    no_comments_count = 0
+    
+    # Parse the data to extract key metrics with improved error handling
+    for line in lines:
+        try:
+            if "STALE ISSUES COUNT:" in line:
+                # Extract number from line, handling various formats
+                count_text = line.split(":")[-1].strip()
+                # Remove any non-digit characters except for the number itself
+                numbers = re.findall(r'\d+', count_text)
+                if numbers:
+                    total_stale = int(numbers[0])
+            elif "Total issues analyzed:" in line:
+                # Extract number from line, handling various formats
+                count_text = line.split(":")[-1].strip()
+                numbers = re.findall(r'\d+', count_text)
+                if numbers:
+                    total_analyzed = int(numbers[0])
+            elif "No comments" in line and "📝" in line:
+                no_comments_count += 1
+        except (ValueError, IndexError) as e:
+            # Skip lines that can't be parsed
+            continue
+    
+    # If parsing failed to find the counts, try alternative parsing methods
+    if total_stale == 0 and total_analyzed == 0:
+        # Count stale issues directly from the output
+        for line in lines:
+            if line.strip().startswith("🐛 **") and ":" in line:
+                total_stale += 1
+            elif "Found" in line and "issues" in line and "analyzed" in line:
+                # Try to extract from "Found X issues (limited to Y for performance)"
+                numbers = re.findall(r'\d+', line)
+                if numbers:
+                    total_analyzed = int(numbers[0])
+    
+    # Calculate metrics
+    stale_rate = int((total_stale / total_analyzed * 100)) if total_analyzed > 0 else 0
+    non_stale_count = max(0, total_analyzed - total_stale)
+    
+    # Parse individual issues and organize by Telco priority and release
+    issues_by_priority = {
+        'Priority-1': {},
+        'Priority-2': {},
+        'Priority-3': {}
+    }
+    
+    current_issue = None
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # Look for issue entries
+        if line.startswith("🐛 **") and ":" in line:
+            # Extract issue key and summary
+            issue_match = re.match(r'🐛 \*\*([A-Z]+-\d+)\*\*: (.+)', line)
+            if issue_match:
+                issue_key = issue_match.group(1)
+                summary = issue_match.group(2)
+                
+                # Initialize issue data
+                current_issue = {
+                    'key': issue_key,
+                    'summary': summary,
+                    'status': 'Unknown',
+                    'assignee': 'Unassigned',
+                    'telco_priority': 'Priority-3',  # default
+                    'versions': [],
+                    'comment_age': 'Unknown',
+                    'analysis': 'No analysis available'
+                }
+                
+                # Parse the following lines for issue details
+                j = i + 1
+                while j < len(lines) and not lines[j].strip().startswith("🐛 **"):
+                    detail_line = lines[j].strip()
+                    
+                    if detail_line.startswith("📋 Status:"):
+                        current_issue['status'] = detail_line.split(":", 1)[1].strip()
+                    elif detail_line.startswith("👤 Assignee:"):
+                        current_issue['assignee'] = detail_line.split(":", 1)[1].strip()
+                    elif detail_line.startswith("🎯 Telco Priority:"):
+                        telco_text = detail_line.split(":", 1)[1].strip()
+                        if "Priority-1" in telco_text:
+                            current_issue['telco_priority'] = 'Priority-1'
+                        elif "Priority-2" in telco_text:
+                            current_issue['telco_priority'] = 'Priority-2'
+                        else:
+                            current_issue['telco_priority'] = 'Priority-3'
+                    elif detail_line.startswith("📦 Affects Versions:"):
+                        versions_text = detail_line.split(":", 1)[1].strip()
+                        current_issue['versions'] = [v.strip() for v in versions_text.split(",")]
+                    elif detail_line.startswith("🕒 Last Comment:") or detail_line.startswith("🕒 Last Activity:"):
+                        current_issue['comment_age'] = detail_line.split(":", 1)[1].strip()
+                    elif detail_line.startswith("🔍 AI Insights:"):
+                        current_issue['analysis'] = detail_line.split(":", 1)[1].strip()
+                    
+                    j += 1
+                
+                # Organize by priority and release
+                priority = current_issue['telco_priority']
+                for version in current_issue['versions']:
+                    # Extract major version (e.g., "4.16.0" -> "4.16")
+                    major_version = re.match(r'(\d+\.\d+)', version)
+                    if major_version:
+                        release = major_version.group(1)
+                        if release not in issues_by_priority[priority]:
+                            issues_by_priority[priority][release] = []
+                        issues_by_priority[priority][release].append(current_issue)
+                
+                # If no versions found, put in "Unknown" release
+                if not current_issue['versions']:
+                    if "Unknown" not in issues_by_priority[priority]:
+                        issues_by_priority[priority]["Unknown"] = []
+                    issues_by_priority[priority]["Unknown"].append(current_issue)
+        
+        i += 1
+    
+    return {
+        'total_stale': total_stale,
+        'total_analyzed': total_analyzed,
+        'stale_rate': stale_rate,
+        'non_stale_count': non_stale_count,
+        'no_comments_count': no_comments_count,
+        'issues_by_priority': issues_by_priority
+    }
+
+
+def generate_priority_sections_html(issues_by_priority: Dict[str, Dict[str, List[Dict]]]) -> str:
+    """
+    Generate HTML sections for each Telco priority with organized issues.
+    
+    Args:
+        issues_by_priority: Dictionary of issues organized by priority and release
+        
+    Returns:
+        HTML string containing all priority sections
+    """
+    priority_sections = ""
+    
+    for priority in ['Priority-1', 'Priority-2', 'Priority-3']:
+        priority_class = priority.lower().replace('-', '_')
+        priority_num = priority.split('-')[1]
+        
+        # Count total issues for this priority
+        total_priority_issues = sum(len(issues) for issues in issues_by_priority[priority].values())
+        
+        priority_sections += f'''
+            <!-- TELCO {priority.upper()} ISSUES -->
+            <div class="section">
+                <h2><span class="priority-badge priority-{priority_num}">Telco {priority}</span> Issues ({total_priority_issues} issues)</h2>
+        '''
+        
+        if total_priority_issues == 0:
+            priority_sections += f'<p style="color: #28a745; font-weight: 600;">No {priority} issues found in stale state.</p>'
+        else:
+            # Sort releases
+            releases = sorted(issues_by_priority[priority].keys(), key=lambda x: x if x != "Unknown" else "0.0")
+            
+            for release in releases:
+                issues = issues_by_priority[priority][release]
+                priority_sections += f'''
+                <h3>{release} Release ({len(issues)} issues)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 8%;">Issue</th>
+                            <th style="width: 28%;">Summary</th>
+                            <th style="width: 8%;">Status</th>
+                            <th style="width: 10%;">Assignee</th>
+                            <th style="width: 10%;">Comment Age</th>
+                            <th style="width: 36%;">Analysis</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                '''
+                
+                for issue in issues:
+                    # Determine status class
+                    status_class = issue['status'].lower().replace(' ', '_').replace('-', '_')
+                    
+                    # Determine age class
+                    age_class = "age-normal"
+                    if "days" in issue['comment_age']:
+                        days_match = re.search(r'(\d+) days', issue['comment_age'])
+                        if days_match:
+                            days = int(days_match.group(1))
+                            if days > 30:
+                                age_class = "age-critical"
+                            elif days > 14:
+                                age_class = "age-warning"
+                    
+                    priority_sections += f'''
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/{issue['key']}" class="issue-link" target="_blank">{issue['key']}</a></td>
+                            <td>{issue['summary']}</td>
+                            <td><span class="status-badge status-{status_class}">{issue['status']}</span></td>
+                            <td>{issue['assignee']}</td>
+                            <td class="comment-age {age_class}">{issue['comment_age']}</td>
+                            <td class="analysis-text">{issue['analysis']}</td>
+                        </tr>
+                    '''
+                
+                priority_sections += '''
+                    </tbody>
+                </table>
+                '''
+        
+        priority_sections += '</div>'
+    
+    return priority_sections
+
+
 def analyze_comments(comments: List[Any], threshold_date: datetime) -> Dict[str, Any]:
     """Analyze comments for rich insights that AI can process."""
     if not comments:
@@ -601,8 +830,7 @@ def analyze_comments(comments: List[Any], threshold_date: datetime) -> Dict[str,
     return analysis
 
 
-@app.tool()
-async def jira_find_stale_issues(
+async def _find_stale_issues_core(
     days_threshold: int = 14,
     include_no_comments: bool = True,
     affects_versions: List[str] = [],
@@ -947,6 +1175,47 @@ async def jira_find_stale_issues(
 
 
 @app.tool()
+async def jira_find_stale_issues(
+    days_threshold: int = 14,
+    include_no_comments: bool = True,
+    affects_versions: List[str] = [],
+    max_results: int = 50,
+    additional_components: List[str] = [],
+    override_components: List[str] = [],
+    additional_projects: List[str] = [],
+    override_projects: List[str] = [],
+    strict_bugs_only: bool = True,
+    include_comment_analysis: bool = True
+) -> str:
+    """Find stale Telco priority bugs with no recent comments.
+    
+    Args:
+        days_threshold: Days threshold for staleness (default: 14)
+        include_no_comments: Include issues with no comments (default: True)
+        affects_versions: Filter by specific versions (default: [])
+        max_results: Maximum number of results (default: 50)
+        additional_components: Additional components to include with defaults (default: [])
+        override_components: If specified, search ONLY these components (ignores defaults) (default: [])
+        additional_projects: Additional projects to include with defaults (default: [])
+        override_projects: If specified, search ONLY these projects (ignores defaults) (default: [])
+        strict_bugs_only: Only include bug-type issues, exclude stories/epics/tasks (default: True)
+        include_comment_analysis: Include detailed comment analysis for AI processing (default: True)
+    """
+    return await _find_stale_issues_core(
+        days_threshold=days_threshold,
+        include_no_comments=include_no_comments,
+        affects_versions=affects_versions,
+        max_results=max_results,
+        additional_components=additional_components,
+        override_components=override_components,
+        additional_projects=additional_projects,
+        override_projects=override_projects,
+        strict_bugs_only=strict_bugs_only,
+        include_comment_analysis=include_comment_analysis
+    )
+
+
+@app.tool()
 async def jira_generate_stale_issues_report(
     days_threshold: int = 5,
     include_no_comments: bool = True,
@@ -983,8 +1252,8 @@ async def jira_generate_stale_issues_report(
         Status message with report location and summary
     """
     try:
-        # First, get the stale issues data
-        stale_data = await jira_find_stale_issues(
+        # First, get the stale issues data using the core helper function
+        stale_data = await _find_stale_issues_core(
             days_threshold=days_threshold,
             include_no_comments=include_no_comments,
             affects_versions=affects_versions,
@@ -997,31 +1266,36 @@ async def jira_generate_stale_issues_report(
             include_comment_analysis=include_comment_analysis
         )
         
-        # Parse the stale data to extract structured information
-        lines = stale_data.split('\n')
+        # Parse the stale data using the helper function
+        parsed_data = parse_stale_issues_data(stale_data)
         
-        # Extract summary information
-        total_stale = 0
-        total_analyzed = 0
-        no_comments_count = 0
-        releases_data = {}
-        issues_by_release = {}
+        # Extract parsed metrics
+        total_stale = parsed_data['total_stale']
+        total_analyzed = parsed_data['total_analyzed']
+        stale_rate = parsed_data['stale_rate']
+        non_stale_count = parsed_data['non_stale_count']
+        issues_by_priority = parsed_data['issues_by_priority']
         
-        # Parse the data to extract key metrics
-        for line in lines:
-            if "STALE ISSUES COUNT:" in line:
-                total_stale = int(line.split(":")[-1].strip())
-            elif "Total issues analyzed:" in line:
-                total_analyzed = int(line.split(":")[-1].strip())
-            elif "No comments" in line and "📝" in line:
-                no_comments_count += 1
+        # Generate HTML sections using the helper function
+        priority_sections = generate_priority_sections_html(issues_by_priority)
         
-        # Calculate metrics
-        stale_rate = int((total_stale / total_analyzed * 100)) if total_analyzed > 0 else 0
-        non_stale_count = total_analyzed - total_stale
+        # Generate dynamic report title based on components
+        if override_components:
+            # User specified specific components only
+            if len(override_components) == 1:
+                report_title = f"{override_components[0]} Stale Issues Analysis"
+            else:
+                report_title = f"{', '.join(override_components)} Stale Issues Analysis"
+        elif additional_components:
+            # User added additional components to defaults
+            report_title = "Deployment and Lifecycle + Custom Components Stale Issues Analysis"
+        else:
+            # Default components
+            report_title = "Deployment and Lifecycle Stale Issues Analysis"
         
         # Prepare template variables
         template_vars = {
+            'report_title': report_title,
             'total_stale': total_stale,
             'total_analyzed': total_analyzed,
             'stale_rate': stale_rate,
@@ -1040,7 +1314,8 @@ async def jira_generate_stale_issues_report(
             'components_text': ', '.join(override_components) if override_components else 'Default components' + (' + ' + ', '.join(additional_components) if additional_components else ''),
             'comment_analysis_text': 'Enabled' if include_comment_analysis else 'Disabled',
             'stale_data': stale_data,
-            'max_results': max_results
+            'max_results': max_results,
+            'priority_sections': priority_sections
         }
         
         # Load and populate the HTML template
@@ -1049,8 +1324,10 @@ async def jira_generate_stale_issues_report(
             with open(template_path, 'r', encoding='utf-8') as f:
                 html_content = f.read()
             
-            # Replace template variables
-            html_content = html_content.format(**template_vars)
+            # Replace template variables using string replacement
+            for key, value in template_vars.items():
+                placeholder = '{' + key + '}'
+                html_content = html_content.replace(placeholder, str(value))
             
         except FileNotFoundError:
             return f"❌ Error: Template file not found at {template_path}. Please ensure the template exists."
