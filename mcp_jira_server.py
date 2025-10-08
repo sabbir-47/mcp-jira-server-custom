@@ -205,22 +205,22 @@ async def jira_get_issue(issue_key: str, include_comment_analysis: bool = False)
             threshold_date = datetime.now() - timedelta(days=5)  # Use 5-day threshold for analysis
             analysis = analyze_comments(comments, threshold_date)
             
-            # Display analysis results
-            result += f"📊 **Analysis Summary:**\n"
-            result += f"   • Total Comments: {analysis['total_comments']}\n"
-            result += f"   • Unique Authors: {analysis['unique_authors']}\n"
-            result += f"   • Activity Pattern: {analysis['activity_pattern']}\n"
-            result += f"   • Last Activity: {analysis['last_activity']}\n"
+            # Display AI-ready analysis results
+            result += f"🧠 **AI-Ready Comment Analysis:**\n"
+            result += f"   • Total Comments: {analysis['summary']['total_comments']}\n"
+            result += f"   • Last 5 Available: {analysis['summary']['last_5_count']}\n"
+            result += f"   • Unique Authors: {analysis['summary']['unique_authors']}\n"
+            result += f"   • Activity Level: {analysis['summary']['activity_level']}\n"
+            result += f"   • Last Activity: {analysis['summary']['last_activity']}\n"
+            result += f"   • Participants: {', '.join(analysis['summary']['participant_list'])}\n"
             
-            if analysis['keywords_found']:
-                result += f"   • Keywords Found: {', '.join(analysis['keywords_found'][:5])}\n"
+            result += f"\n📝 **Last {len(analysis['raw_comments'])} Comments for AI Analysis:**\n"
+            for comment in analysis['raw_comments']:
+                content_preview = comment['content'][:200] + "..." if len(comment['content']) > 200 else comment['content']
+                result += f"   {comment['position']}. [{comment['date']}] {comment['author']} ({comment['days_ago']} days ago):\n"
+                result += f"      \"{content_preview}\"\n\n"
             
-            if analysis['escalation_indicators']:
-                result += f"   • 🚨 Escalation Indicators: {', '.join(analysis['escalation_indicators'])}\n"
-            
-            result += "\n**Recent Comments:**\n"
-            for comment_data in analysis['recent_comments']:
-                result += f"- **{comment_data['author']}** ({comment_data['date']}): {comment_data['preview']}\n"
+            result += f"💡 **Note:** {analysis['analysis_note']}"
                 
         elif not include_comment_analysis:
             # Simple comment display without analysis
@@ -277,60 +277,34 @@ async def jira_analyze_issue_comments(issue_key: str, days_threshold: int = 5) -
         result += f"**Issue:** {issue.fields.summary}\n"
         result += f"**Status:** {issue.fields.status.name}\n\n"
         
-        result += f"📊 **Analysis Overview:**\n"
-        result += f"   • Total Comments: {analysis['total_comments']}\n"
-        result += f"   • Unique Authors: {analysis['unique_authors']}\n"
-        result += f"   • Activity Pattern: {analysis['activity_pattern']}\n"
-        result += f"   • Last Activity: {analysis['last_activity']}\n"
-        result += f"   • Analysis Threshold: {days_threshold} days\n\n"
+        result += f"🧠 **AI-Ready Analysis Overview:**\n"
+        result += f"   • Total Comments: {analysis['summary']['total_comments']}\n"
+        result += f"   • Last 5 Available: {analysis['summary']['last_5_count']}\n"
+        result += f"   • Unique Authors: {analysis['summary']['unique_authors']}\n"
+        result += f"   • Activity Level: {analysis['summary']['activity_level']}\n"
+        result += f"   • Last Activity: {analysis['summary']['last_activity']}\n"
+        result += f"   • Analysis Threshold: {days_threshold} days\n"
+        result += f"   • Participants: {', '.join(analysis['summary']['participant_list'])}\n\n"
         
-        # Keywords Analysis
-        if analysis['keywords_found']:
-            result += f"🔑 **Keywords Detected:**\n"
-            urgency_keywords = [k for k in analysis['keywords_found'] if k.startswith('URGENT:')]
-            status_keywords = [k for k in analysis['keywords_found'] if k.startswith('STATUS:')]
-            problem_keywords = [k for k in analysis['keywords_found'] if k.startswith('PROBLEM:')]
+        # Full Comment Thread for AI Analysis
+        if analysis['raw_comments']:
+            result += f"📝 **Complete Comment Thread (Last {len(analysis['raw_comments'])} Comments):**\n"
+            result += f"*AI Assistant: Analyze these comments to provide insights about the issue status, progress, blockers, and next steps.*\n\n"
             
-            if urgency_keywords:
-                result += f"   🚨 Urgency: {', '.join([k.split(':')[1] for k in urgency_keywords])}\n"
-            if status_keywords:
-                result += f"   ✅ Status: {', '.join([k.split(':')[1] for k in status_keywords])}\n"
-            if problem_keywords:
-                result += f"   ⚠️ Problems: {', '.join([k.split(':')[1] for k in problem_keywords])}\n"
-            result += "\n"
+            for comment in analysis['raw_comments']:
+                result += f"**Comment {comment['position']} - {comment['author']}** ({comment['date']} - {comment['days_ago']} days ago)\n"
+                result += f"```\n{comment['content']}\n```\n\n"
         
-        # Escalation Indicators
-        if analysis['escalation_indicators']:
-            result += f"🚨 **Escalation Indicators:**\n"
-            for indicator in analysis['escalation_indicators']:
-                result += f"   • {indicator}\n"
-            result += "\n"
-        
-        # Recent Comments Analysis
-        if analysis['recent_comments']:
-            result += f"💬 **Recent Comments Analysis:**\n"
-            for i, comment_data in enumerate(analysis['recent_comments'], 1):
-                result += f"   **{i}. {comment_data['author']}** ({comment_data['date']})\n"
-                result += f"      Length: {comment_data['length']} chars\n"
-                result += f"      Preview: {comment_data['preview']}\n\n"
-        
-        # AI Assistant Recommendations
-        result += f"🤖 **AI Assistant Insights:**\n"
-        
-        if analysis['escalation_indicators']:
-            result += f"   • ⚠️ This issue shows escalation patterns - may need management attention\n"
-        
-        if 'URGENT' in str(analysis['keywords_found']):
-            result += f"   • 🚨 Urgency keywords detected - prioritize this issue\n"
-        
-        if analysis['unique_authors'] > 5:
-            result += f"   • 👥 High collaboration ({analysis['unique_authors']} authors) - complex issue\n"
-        
-        if analysis['total_comments'] > 15:
-            result += f"   • 💬 High activity ({analysis['total_comments']} comments) - active discussion\n"
-        
-        if analysis['activity_pattern'] == 'Single comment':
-            result += f"   • 📝 Single comment - may need triage or follow-up\n"
+        # AI Analysis Prompt
+        result += f"🤖 **AI Analysis Prompt:**\n"
+        result += f"Based on the above {len(analysis['raw_comments'])} comments, please analyze:\n"
+        result += f"   • Current status and progress of the issue\n"
+        result += f"   • Any blockers or dependencies mentioned\n"
+        result += f"   • Urgency level and escalation needs\n"
+        result += f"   • Recommended next steps\n"
+        result += f"   • Key stakeholders and their roles\n\n"
+        result += f"💡 **Analysis Ready:** {analysis['analysis_note']}\n"
+        result += f"🎯 **AI Assistant:** Use the comment thread above to provide detailed insights about this issue."
         
         return result
         
@@ -748,86 +722,96 @@ def generate_priority_sections_html(issues_by_priority: Dict[str, Dict[str, List
 
 
 def analyze_comments(comments: List[Any], threshold_date: datetime) -> Dict[str, Any]:
-    """Analyze comments for rich insights that AI can process."""
+    """
+    Fetch and structure the last 5 comments for AI analysis.
+    
+    Plan 2: Hybrid AI + Structured Analysis
+    - Provides both structured summary AND raw comments for AI reasoning
+    - AI assistant can use summary for quick insights or analyze raw comments
+    - Optimized for both automated reports and interactive analysis
+    """
     if not comments:
         return {
-            'total_comments': 0,
-            'unique_authors': 0,
-            'recent_comments': [],
-            'keywords_found': [],
-            'escalation_indicators': [],
-            'activity_pattern': 'No comments',
-            'last_activity': 'Never'
+            'summary': {
+                'total_comments': 0,
+                'unique_authors': 0,
+                'last_activity': 'No comments available',
+                'activity_level': 'None',
+                'has_recent_activity': False
+            },
+            'raw_comments': [],
+            'ai_analysis_ready': True,
+            'analysis_note': 'No comments to analyze'
         }
     
-    # Keywords that indicate urgency, blockers, or important status
-    urgency_keywords = ['urgent', 'critical', 'blocker', 'asap', 'immediately', 'escalate']
-    status_keywords = ['fixed', 'resolved', 'workaround', 'patch', 'solution', 'closed']
-    problem_keywords = ['broken', 'failing', 'error', 'issue', 'problem', 'bug', 'regression']
+    # Sort comments by creation date (most recent first)
+    sorted_comments = sorted(comments, key=lambda c: c.created, reverse=True)
     
-    analysis = {
-        'total_comments': len(comments),
-        'unique_authors': len(set(getattr(c.author, 'displayName', 'Unknown') for c in comments)),
-        'recent_comments': [],
-        'keywords_found': [],
-        'escalation_indicators': [],
-        'activity_pattern': '',
-        'last_activity': '',
-        'comment_frequency': []
-    }
+    # Get last 5 comments for AI analysis
+    last_5_comments = sorted_comments[:5]
     
-    # Analyze recent comments (last 5)
-    recent_comments = comments[-5:] if len(comments) > 5 else comments
-    for comment in recent_comments:
-        comment_text = getattr(comment, 'body', '').lower()
-        author = getattr(comment.author, 'displayName', 'Unknown') if hasattr(comment, 'author') else 'Unknown'
-        created = getattr(comment, 'created', '')
-        
-        analysis['recent_comments'].append({
-            'author': author,
-            'date': created,
-            'preview': comment_text[:150] + '...' if len(comment_text) > 150 else comment_text,
-            'length': len(comment_text)
-        })
-        
-        # Keyword analysis
-        found_keywords = []
-        for keyword in urgency_keywords:
-            if keyword in comment_text:
-                found_keywords.append(f"URGENT:{keyword}")
-        for keyword in status_keywords:
-            if keyword in comment_text:
-                found_keywords.append(f"STATUS:{keyword}")
-        for keyword in problem_keywords:
-            if keyword in comment_text:
-                found_keywords.append(f"PROBLEM:{keyword}")
-        
-        analysis['keywords_found'].extend(found_keywords)
+    # Extract structured data for summary
+    authors = set()
+    comment_dates = []
     
-    # Activity pattern analysis
-    if len(comments) == 1:
-        analysis['activity_pattern'] = 'Single comment'
-    elif len(comments) < 5:
-        analysis['activity_pattern'] = 'Low activity'
-    elif len(comments) < 15:
-        analysis['activity_pattern'] = 'Moderate activity'
+    # Prepare raw comments for AI analysis
+    raw_comments_for_ai = []
+    
+    for i, comment in enumerate(last_5_comments, 1):
+        # Extract author info
+        author_name = "Unknown"
+        if hasattr(comment, 'author') and hasattr(comment.author, 'displayName'):
+            author_name = comment.author.displayName
+            authors.add(author_name)
+        
+        # Extract comment date
+        comment_date = comment.created
+        comment_dates.append(comment_date)
+        
+        # Format comment for AI analysis
+        comment_for_ai = {
+            'position': i,  # 1 = most recent, 5 = oldest of the 5
+            'date': comment_date.strftime('%Y-%m-%d %H:%M'),
+            'author': author_name,
+            'content': comment.body if hasattr(comment, 'body') and comment.body else "[No content]",
+            'days_ago': (datetime.now() - comment_date.replace(tzinfo=None)).days if comment_date else None
+        }
+        
+        raw_comments_for_ai.append(comment_for_ai)
+    
+    # Calculate activity metrics
+    recent_comments = [c for c in sorted_comments if c.created >= threshold_date]
+    has_recent_activity = len(recent_comments) > 0
+    
+    if len(recent_comments) >= 3:
+        activity_level = "High"
+    elif len(recent_comments) >= 1:
+        activity_level = "Moderate" 
     else:
-        analysis['activity_pattern'] = 'High activity'
+        activity_level = "Low"
     
-    # Last activity
-    if comments:
-        latest_comment = comments[-1]
-        analysis['last_activity'] = getattr(latest_comment, 'created', 'Unknown')
-        
-        # Check for escalation indicators
-        latest_text = getattr(latest_comment, 'body', '').lower()
-        if any(word in latest_text for word in ['escalate', 'urgent', 'critical', 'manager', 'leadership']):
-            analysis['escalation_indicators'].append('Recent escalation language detected')
+    # Get last activity info
+    last_activity = "No recent activity"
+    if sorted_comments:
+        last_comment = sorted_comments[0]
+        last_author = getattr(last_comment.author, 'displayName', 'Unknown') if hasattr(last_comment, 'author') else 'Unknown'
+        days_since = (datetime.now() - last_comment.created.replace(tzinfo=None)).days
+        last_activity = f"{last_comment.created.strftime('%Y-%m-%d')} by {last_author} ({days_since} days ago)"
     
-    # Remove duplicates from keywords
-    analysis['keywords_found'] = list(set(analysis['keywords_found']))
-    
-    return analysis
+    return {
+        'summary': {
+            'total_comments': len(comments),
+            'last_5_count': len(last_5_comments),
+            'unique_authors': len(authors),
+            'last_activity': last_activity,
+            'activity_level': activity_level,
+            'has_recent_activity': has_recent_activity,
+            'participant_list': list(authors)
+        },
+        'raw_comments': raw_comments_for_ai,
+        'ai_analysis_ready': True,
+        'analysis_note': f"Last {len(last_5_comments)} comments available for AI analysis"
+    }
 
 
 async def _find_stale_issues_core(
@@ -1104,21 +1088,29 @@ async def _find_stale_issues_core(
                     else:
                         result += f"   🕒 Last Comment: {latest_date}\n"
                 
-                # Compact keywords and indicators
-                insights = []
-                if analysis['keywords_found']:
-                    insights.append(f"Keywords: {', '.join(analysis['keywords_found'][:3])}")
-                if analysis['escalation_indicators']:
-                    insights.append(f"🚨 ESCALATION DETECTED")
+                # AI-ready insights
+                ai_insights = []
+                if analysis['summary']['activity_level'] == 'High':
+                    ai_insights.append("High activity")
+                elif analysis['summary']['activity_level'] == 'Low':
+                    ai_insights.append("Low activity")
                 
-                if insights:
-                    result += f"   🔍 AI Insights: {' | '.join(insights)}\n"
+                if analysis['summary']['has_recent_activity']:
+                    ai_insights.append("Recent comments available")
+                else:
+                    ai_insights.append("No recent activity")
                 
-                # Most recent comment for context
-                if analysis['recent_comments']:
-                    latest_comment = analysis['recent_comments'][-1]
-                    preview = latest_comment['preview'][:120] + "..." if len(latest_comment['preview']) > 120 else latest_comment['preview']
-                    result += f"   💭 Latest: [{latest_comment['author']}] {preview}\n"
+                if len(analysis['summary']['participant_list']) > 3:
+                    ai_insights.append(f"{len(analysis['summary']['participant_list'])} participants")
+                
+                if ai_insights:
+                    result += f"   🔍 AI Insights: {' | '.join(ai_insights)}\n"
+                
+                # Most recent comment for AI context
+                if analysis['raw_comments']:
+                    latest_comment = analysis['raw_comments'][0]  # Position 1 is most recent
+                    preview = latest_comment['content'][:120] + "..." if len(latest_comment['content']) > 120 else latest_comment['content']
+                    result += f"   💭 Latest ({latest_comment['days_ago']}d ago): [{latest_comment['author']}] {preview}\n"
             else:
                 # Simple comment display without analysis
                 result += f"   💬 Comments: {comments_count}\n"
