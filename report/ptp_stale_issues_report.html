@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{report_title} - Interactive Report</title>
+    <title>Deployment and Lifecycle Stale Issues Analysis - Interactive Report</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * {
@@ -310,7 +310,7 @@
     <div class="container">
         <!-- Navigation Bar -->
         <div class="nav-bar">
-            <h1 style="color: white; margin: 0;">{report_title}</h1>
+            <h1 style="color: white; margin: 0;">Deployment and Lifecycle Stale Issues Analysis</h1>
             <div class="nav-buttons">
                 <button class="nav-btn active" onclick="showPage('executive')">Executive Dashboard</button>
                 <button class="nav-btn" onclick="showPage('detailed')">Detailed Analysis</button>
@@ -322,10 +322,13 @@
             <div class="exec-summary">
                 <h1 class="exec-title">Executive Summary</h1>
                 
-                {executive_summary_content}
+                                <p style="font-size: 1.1em; margin-bottom: 1.5rem; line-height: 1.6; color: #2c3e50;">Analysis of PTP team issues across OpenShift versions 4.14, 4.16, and 4.18 revealed 2 stale issues with no comments in the last 5 days.</p>
+                <p style="font-size: 1.1em; margin-bottom: 1.5rem; line-height: 1.6; color: #2c3e50;">OCPBUGS-62229 addresses a chrony-wait.service failure when chrony is disabled per RDS documentation. A known workaround exists in the machine config docs but needs to be integrated into telco documentation. The issue has been assigned to Michele Tomaso Costa for 6 days without progress.</p>
+                <p style="font-size: 1.1em; margin-bottom: 1.5rem; line-height: 1.6; color: #2c3e50;">OCPBUGS-62812 is a newly created issue regarding missing CLOCK_REALTIME state propagation from TGM/GNSS sources. The reporter has self-assigned the issue and identified specific code locations in logparser.go that need fixes, but the issue remains in New status.</p>
+
                 
                 <p style="font-size: 1.1em; margin-bottom: 2rem; text-align: center; color: #2c3e50;">
-                    <strong>Current State:</strong> Analysis reveals <strong>{total_stale} out of {total_analyzed} issues ({stale_rate}%)</strong> in a stale state across {version_scope_text} releases, requiring immediate attention to maintain development velocity and customer satisfaction.
+                    <strong>Current State:</strong> Analysis reveals <strong>2 out of 9 issues (22%)</strong> in a stale state across 4.14, 4.16, 4.18 releases, requiring immediate attention to maintain development velocity and customer satisfaction.
                 </p>
             </div>
 
@@ -346,13 +349,19 @@
 
             <div class="key-findings">
                 <h3>Key Findings & Analysis</h3>
-                {key_findings_content}
+                <ul style='margin-top: 15px;'>
+                    <li>2 stale PTP issues found across versions 4.14, 4.16, 4.18</li>
+                    <li>Both issues have zero comments despite being assigned</li>
+                    <li>OCPBUGS-62229: 13 days old, no activity since assignment (Oct 2)</li>
+                    <li>OCPBUGS-62812: Just created (Oct 7), needs immediate attention</li>
+                    <li>Both are Telco:Priority-2 issues requiring prompt action</li>
+                </ul>
                 <h4 style="margin-top: 25px; color: #2a5298;">Analysis Parameters</h4>
                 <ul>
-                    <li><strong>Stale Rate:</strong> {stale_rate}% of analyzed issues are stale (threshold: {days_threshold}+ days)</li>
-                    <li><strong>Scope:</strong> Analysis covers {issue_type_text} across {version_scope_text}</li>
-                    <li><strong>Component Focus:</strong> {component_scope_text}</li>
-                    <li><strong>Analysis Type:</strong> {analysis_type_text}</li>
+                    <li><strong>Stale Rate:</strong> 22% of analyzed issues are stale (threshold: 5+ days)</li>
+                    <li><strong>Scope:</strong> Analysis covers bug-type issues only across 4.14, 4.16, 4.18</li>
+                    <li><strong>Component Focus:</strong> standard component scope</li>
+                    <li><strong>Analysis Type:</strong> Advanced comment analysis enabled</li>
                 </ul>
             </div>
         </div>
@@ -362,24 +371,74 @@
             <div class="section">
                 <h2>Analysis Parameters</h2>
                 <ul style="list-style-type: none; padding: 0;">
-                    <li><strong>Staleness Threshold:</strong> {days_threshold} days</li>
-                    <li><strong>Include No Comments:</strong> {include_no_comments_text}</li>
-                    <li><strong>Affects Versions:</strong> {affects_versions_text}</li>
-                    <li><strong>Projects:</strong> {projects_text}</li>
-                    <li><strong>Issue Types:</strong> {issue_types_text}</li>
-                    <li><strong>Components:</strong> {components_text}</li>
-                    <li><strong>Max Results:</strong> {max_results}</li>
-                    <li><strong>Comment Analysis:</strong> {comment_analysis_text}</li>
+                    <li><strong>Staleness Threshold:</strong> 5 days</li>
+                    <li><strong>Include No Comments:</strong> Yes</li>
+                    <li><strong>Affects Versions:</strong> 4.14, 4.16, 4.18</li>
+                    <li><strong>Projects:</strong> OCPBUGS</li>
+                    <li><strong>Issue Types:</strong> Bugs only</li>
+                    <li><strong>Components:</strong> Default components</li>
+                    <li><strong>Max Results:</strong> 100</li>
+                    <li><strong>Comment Analysis:</strong> Enabled</li>
                 </ul>
             </div>
 
-            {priority_sections}
+            
+            <!-- TELCO PRIORITY-1 ISSUES -->
+            <div class="section">
+                <h2><span class="priority-badge priority-1">Telco Priority-1</span> Issues (0 issues)</h2>
+        <p style="color: #28a745; font-weight: 600;">No Priority-1 issues found in stale state.</p></div>
+            <!-- TELCO PRIORITY-2 ISSUES -->
+            <div class="section">
+                <h2><span class="priority-badge priority-2">Telco Priority-2</span> Issues (2 issues)</h2>
+        
+                <h3>4.18 Release (2 issues)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 8%;">Issue</th>
+                            <th style="width: 25%;">Summary</th>
+                            <th style="width: 7%;">Status</th>
+                            <th style="width: 10%;">Assignee</th>
+                            <th style="width: 8%;">Versions</th>
+                            <th style="width: 10%;">Comment Age</th>
+                            <th style="width: 32%;">Analysis</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-62229" class="issue-link" target="_blank">OCPBUGS-62229</a></td>
+                            <td>[4.19] Disabling chrony according to RDS leads to problems with chrony-wait.service Inbox</td>
+                            <td><span class="status-badge status-assigned">ASSIGNED</span></td>
+                            <td>Michele Tomaso Costa</td>
+                            <td style="font-weight: 600; color: #667eea;">4.18</td>
+                            <td class="comment-age age-normal">No comments (Created: 2025-09-25)</td>
+                            <td class="analysis-text">Assigned to Michele Tomaso Costa but no progress since Oct 2. chrony-wait.service fails when chrony is disabled per RDS docs. Known workaround exists in machine config docs but needs integration into telco documentation.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-62812" class="issue-link" target="_blank">OCPBUGS-62812</a></td>
+                            <td>Missing CLOCK_REALTIME State Propagation from TGM/GNSS Sources</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Aneesh Puttur</td>
+                            <td style="font-weight: 600; color: #667eea;">4.18</td>
+                            <td class="comment-age age-normal">No comments (Created: 2025-10-07)</td>
+                            <td class="analysis-text">Newly created issue (Oct 7), still in New status. Self-assigned by reporter Aneesh Puttur. OS clock state remains LOCKED when timing source unreliable. Missing CLOCK_REALTIME state propagation in logparser.go for TGM/GNSS sources. Specific code locations identified for fix.</td>
+                        </tr>
+                    
+                    </tbody>
+                </table>
+                </div>
+            <!-- TELCO PRIORITY-3 ISSUES -->
+            <div class="section">
+                <h2><span class="priority-badge priority-3">Telco Priority-3</span> Issues (0 issues)</h2>
+        <p style="color: #28a745; font-weight: 600;">No Priority-3 issues found in stale state.</p></div>
         </div>
 
         <!-- Footer -->
         <div class="footer">
-            <p><strong>{report_title} Report</strong> | Generated on {generation_date}</p>
-            <p>Staleness Threshold: {days_threshold}+ days | Analysis Tool: MCP JIRA Server</p>
+            <p><strong>Deployment and Lifecycle Stale Issues Analysis Report</strong> | Generated on October 08, 2025</p>
+            <p>Staleness Threshold: 5+ days | Analysis Tool: MCP JIRA Server</p>
         </div>
     </div>
 
@@ -409,9 +468,9 @@
             new Chart(statusCtx, {
                 type: 'doughnut',
                 data: {
-                    labels: {status_labels},
+                    labels: ["ASSIGNED (1)", "New (1)"],
                     datasets: [{
-                        data: {status_data},
+                        data: [1, 1],
                         backgroundColor: ['#ffc107', '#3498db', '#27ae60', '#17a2b8', '#fd7e14', '#6c757d'],
                         borderWidth: 3,
                         borderColor: '#ffffff'
@@ -436,7 +495,7 @@
                     labels: ['0-30 days', '31-60 days', '61-90 days', '91-180 days', '180+ days'],
                     datasets: [{
                         label: 'Issues',
-                        data: {age_distribution_data},
+                        data: [0, 0, 0, 0, 2],
                         backgroundColor: ['#27ae60', '#f39c12', '#e67e22', '#e74c3c', '#8b0000'],
                         borderRadius: 5
                     }]
@@ -464,10 +523,10 @@
             new Chart(releaseCtx, {
                 type: 'bar',
                 data: {
-                    labels: {release_labels},
+                    labels: ["4.18"],
                     datasets: [{
                         label: 'Stale Issues',
-                        data: {release_data},
+                        data: [2],
                         backgroundColor: '#667eea',
                         borderRadius: 5
                     }]
