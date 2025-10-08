@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deployment and Lifecycle Stale Issues Analysis - Interactive Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        /* Navigation Bar */
+        .nav-bar {
+            background: #2c3e50;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .nav-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .nav-btn {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s;
+        }
+
+        .nav-btn:hover {
+            background: #2980b9;
+        }
+
+        .nav-btn.active {
+            background: #e74c3c;
+        }
+
+        /* Page Sections */
+        .page-section {
+            display: none;
+            padding: 30px;
+        }
+
+        .page-section.active {
+            display: block;
+        }
+
+        /* Executive Summary Page */
+        .exec-summary {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+
+        .exec-title {
+            font-size: 2.5em;
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+
+        .chart-card {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            min-height: 400px;
+            position: relative;
+        }
+
+        .chart-card canvas {
+            max-height: 350px;
+        }
+
+        .chart-title {
+            font-size: 1.3em;
+            color: #2c3e50;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        /* Detailed Analysis Page */
+        .section {
+            margin-bottom: 40px;
+        }
+
+        .section h2 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+        }
+
+        .section h3 {
+            color: #2a5298;
+            margin-top: 25px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+            background: #f8f9fa;
+            padding: 10px 15px;
+            border-radius: 5px;
+        }
+
+        .priority-badge {
+            padding: 8px 15px;
+            border-radius: 20px;
+            color: white;
+            font-weight: 600;
+            font-size: 0.9em;
+        }
+
+        .priority-1 {
+            background: #e74c3c;
+        }
+
+        .priority-2 {
+            background: #f39c12;
+        }
+
+        .priority-3 {
+            background: #3498db;
+        }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            font-size: 0.9em;
+        }
+
+        thead {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        th {
+            padding: 12px 8px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        td {
+            padding: 10px 8px;
+            border-bottom: 1px solid #e9ecef;
+            vertical-align: top;
+        }
+
+        tbody tr:hover {
+            background-color: #f8f9fa;
+            transition: background-color 0.2s;
+        }
+
+        tbody tr:nth-child(even) {
+            background-color: #fafbfc;
+        }
+
+        .issue-link {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .issue-link:hover {
+            text-decoration: underline;
+        }
+
+        tr:hover {
+            background-color: #f8f9fa;
+        }
+
+        .issue-link {
+            color: #3498db;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .issue-link:hover {
+            text-decoration: underline;
+        }
+
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: 600;
+        }
+
+        .status-new { background: #e74c3c; color: white; }
+        .status-assigned { background: #f39c12; color: white; }
+        .status-post { background: #9b59b6; color: white; }
+        .status-modified { background: #3498db; color: white; }
+        .status-on_qa { background: #1abc9c; color: white; }
+        .status-verified { background: #27ae60; color: white; }
+
+        .comment-age {
+            font-weight: 600;
+        }
+
+        .age-critical { color: #e74c3c; }
+        .age-warning { color: #f39c12; }
+        .age-normal { color: #27ae60; }
+
+        .analysis-text {
+            font-size: 0.9em;
+            line-height: 1.4;
+        }
+
+        .keywords {
+            margin-top: 5px;
+        }
+
+        .keyword-tag {
+            display: inline-block;
+            background: #ecf0f1;
+            color: #2c3e50;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 0.75em;
+            margin: 1px;
+        }
+
+        .keyword-urgent { background: #fadbd8; color: #c0392b; }
+        .keyword-status { background: #d5f4e6; color: #148f77; }
+        .keyword-problem { background: #fdeaa7; color: #b7950b; }
+
+        /* Key Findings */
+        .key-findings {
+            background: #f4f6f9;
+            border-left: 5px solid #3498db;
+            padding: 20px;
+            margin: 30px 0;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .key-findings h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+        }
+
+        .key-findings ul {
+            list-style-type: none;
+            padding-left: 0;
+        }
+
+        .key-findings li {
+            margin-bottom: 10px;
+            padding-left: 25px;
+            position: relative;
+        }
+
+        .key-findings li:before {
+            content: "🔍";
+            position: absolute;
+            left: 0;
+        }
+
+        /* Footer */
+        .footer {
+            background: #2c3e50;
+            color: white;
+            text-align: center;
+            padding: 20px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation Bar -->
+        <div class="nav-bar">
+            <h1 style="color: white; margin: 0;">Deployment and Lifecycle Stale Issues Analysis</h1>
+            <div class="nav-buttons">
+                <button class="nav-btn active" onclick="showPage('executive')">Executive Dashboard</button>
+                <button class="nav-btn" onclick="showPage('detailed')">Detailed Analysis</button>
+            </div>
+        </div>
+
+        <!-- Executive Dashboard -->
+        <div id="executive" class="page-section active">
+            <div class="exec-summary">
+                <h1 class="exec-title">Executive Summary</h1>
+                
+                                <p style="font-size: 1.1em; margin-bottom: 1.5rem; line-height: 1.6; color: #2c3e50;">This report analyzes 24 stale Telco priority bugs affecting OpenShift versions 4.14, 4.16, and 4.18, where no comments have been posted in the last 5 days. The analysis reveals several concerning patterns requiring immediate attention.</p>
+                <p style="font-size: 1.1em; margin-bottom: 1.5rem; line-height: 1.6; color: #2c3e50;">**Critical Blockers and Resource Constraints:**
+Hardware availability is blocking critical debugging work on HP ARM SNO boot order issues (OCPBUGS-50689), where the cnfdg37 test system is allocated to other priorities. This issue has a partial workaround but no root cause resolution. Multiple issues are stalled waiting for customer responses, including HP ARM hardware SSL certificate problems (OCPBUGS-48534) and BMH scale operation errors (OCPBUGS-36197), with some waiting over 89 days for customer data.</p>
+                <p style="font-size: 1.1em; margin-bottom: 1.5rem; line-height: 1.6; color: #2c3e50;">**Work in Progress and Modified Issues:**
+Active development continues on BIOS settings optimization (OCPBUGS-54677) with a candidate patch ready to reduce server downtime during firmware updates. However, 4 issues marked as MODIFIED status have stalled without closure, including fixes that were dropped from advisories (OCPBUGS-54381, 48088) and others with only automated bot activity (OCPBUGS-56865).</p>
+                <p style="font-size: 1.1em; margin-bottom: 1.5rem; line-height: 1.6; color: #2c3e50;">**Documentation and Tooling Gaps:**
+The cluster-compare tool requires multiple enhancements to handle NetworkAttachmentDefinition annotations, PerformanceProfile parameters, and non-RT kernel configurations. The RAN Reference Design Specifications (RDS) has identified documentation gaps around Console Disable settings, cluster capabilities (OLM/Ingress), and ClusterInstance scale data that remain unaddressed for extended periods.</p>
+                <p style="font-size: 1.1em; margin-bottom: 1.5rem; line-height: 1.6; color: #2c3e50;">**Component Distribution and Priority:**
+GitOps ZTP component accounts for 58% of stale issues (14 bugs), indicating potential resource constraints or complexity in this area. Bare Metal Hardware Provisioning represents 25% (6 bugs). The DPDK ARM MLNX driver issue was resolved in the Konflux transition but will resurface in 4.19.z and 4.20+ releases when RHEL base images upgrade from 9.4 to 9.6.</p>
+                <p style="font-size: 1.1em; margin-bottom: 1.5rem; line-height: 1.6; color: #2c3e50;">**New Issues Requiring Triage:**
+42% of stale issues (10 bugs) have zero comments and require initial triage and assignment, including SR-IOV annotation cleanup, cluster-compare tolerations, and reference configuration validation gaps.</p>
+
+                
+                <p style="font-size: 1.1em; margin-bottom: 2rem; text-align: center; color: #2c3e50;">
+                    <strong>Current State:</strong> Analysis reveals <strong>24 out of 24 issues (100%)</strong> in a stale state across 4.14, 4.16, 4.18 releases, requiring immediate attention to maintain development velocity and customer satisfaction.
+                </p>
+            </div>
+
+            <div class="charts-grid">
+                <div class="chart-card">
+                    <h3 class="chart-title">Issue Status Distribution</h3>
+                    <canvas id="statusChart"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Age Distribution Analysis</h3>
+                    <canvas id="ageChart"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Release Impact Overview</h3>
+                    <canvas id="releaseChart"></canvas>
+                </div>
+            </div>
+
+            <div class="key-findings">
+                <h3>Key Findings & Analysis</h3>
+                <ul style='margin-top: 15px;'>
+                    <li>24 stale issues found across versions 4.14, 4.16, 4.18 with no comments in last 5 days</li>
+                    <li>10 issues (42%) have zero comments - newly created issues needing initial triage</li>
+                    <li>5 issues blocked on customer/external responses (OCPBUGS-48534, 36197, 37191, 39292, 60646)</li>
+                    <li>4 issues in MODIFIED status but stalled without closure (OCPBUGS-56865, 54381, 48088, 62705)</li>
+                    <li>Hardware availability blocking OCPBUGS-50689 (HP ARM SNO) - needs cnfdg37 test system access</li>
+                    <li>Active development on OCPBUGS-54677 (BIOS optimization) linked to METAL-1357 epic</li>
+                    <li>Documentation gaps identified in RAN RDS (OCPBUGS-38140, 48503, 39292, 42657)</li>
+                    <li>Cluster-compare tool needs multiple tolerations added (OCPBUGS-59904, 59903, 62715, 62705)</li>
+                    <li>DPDK ARM driver issue (OCPBUGS-57500) resolved but will reappear in future releases</li>
+                    <li>GitOps ZTP component has 14 issues (58%), Bare Metal has 6 issues (25%)</li>
+                </ul>
+                <h4 style="margin-top: 25px; color: #2a5298;">Analysis Parameters</h4>
+                <ul>
+                    <li><strong>Stale Rate:</strong> 100% of analyzed issues are stale (threshold: 5+ days)</li>
+                    <li><strong>Scope:</strong> Analysis covers bug-type issues only across 4.14, 4.16, 4.18</li>
+                    <li><strong>Component Focus:</strong> standard component scope</li>
+                    <li><strong>Analysis Type:</strong> Advanced comment analysis enabled</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Detailed Analysis -->
+        <div id="detailed" class="page-section">
+            <div class="section">
+                <h2>Analysis Parameters</h2>
+                <ul style="list-style-type: none; padding: 0;">
+                    <li><strong>Staleness Threshold:</strong> 5 days</li>
+                    <li><strong>Include No Comments:</strong> Yes</li>
+                    <li><strong>Affects Versions:</strong> 4.14, 4.16, 4.18</li>
+                    <li><strong>Projects:</strong> Default projects</li>
+                    <li><strong>Issue Types:</strong> Bugs only</li>
+                    <li><strong>Components:</strong> Default components</li>
+                    <li><strong>Max Results:</strong> 100</li>
+                    <li><strong>Comment Analysis:</strong> Enabled</li>
+                </ul>
+            </div>
+
+            
+            <!-- TELCO PRIORITY-1 ISSUES -->
+            <div class="section">
+                <h2><span class="priority-badge priority-1">Telco Priority-1</span> Issues (1 issues)</h2>
+        
+                <h3>4.18 Release (1 issues)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 8%;">Issue</th>
+                            <th style="width: 25%;">Summary</th>
+                            <th style="width: 7%;">Status</th>
+                            <th style="width: 10%;">Assignee</th>
+                            <th style="width: 8%;">Versions</th>
+                            <th style="width: 10%;">Comment Age</th>
+                            <th style="width: 32%;">Analysis</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-59259" class="issue-link" target="_blank">OCPBUGS-59259</a></td>
+                            <td>Firmware upgrade failures get cleared from the BaremetalHost making it difficult to know what failed</td>
+                            <td><span class="status-badge status-assigned">ASSIGNED</span></td>
+                            <td>Iury Gregory Melo Ferreira</td>
+                            <td style="font-weight: 600; color: #667eea;">4.18</td>
+                            <td class="comment-age age-critical">2025-07-23 03:25 (77 days ago)</td>
+                            <td class="analysis-text">Under investigation. Firmware upgrade failures not properly reported in BaremetalHost status. Analyzing BMO/Ironic logs to identify error propagation issue. 77 days since last activity.</td>
+                        </tr>
+                    
+                    </tbody>
+                </table>
+                </div>
+            <!-- TELCO PRIORITY-2 ISSUES -->
+            <div class="section">
+                <h2><span class="priority-badge priority-2">Telco Priority-2</span> Issues (2 issues)</h2>
+        
+                <h3>4.18 Release (2 issues)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 8%;">Issue</th>
+                            <th style="width: 25%;">Summary</th>
+                            <th style="width: 7%;">Status</th>
+                            <th style="width: 10%;">Assignee</th>
+                            <th style="width: 8%;">Versions</th>
+                            <th style="width: 10%;">Comment Age</th>
+                            <th style="width: 32%;">Analysis</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-54677" class="issue-link" target="_blank">OCPBUGS-54677</a></td>
+                            <td>Optimize server downtime when updating BIOS settings</td>
+                            <td><span class="status-badge status-assigned">ASSIGNED</span></td>
+                            <td>Jacob Anders</td>
+                            <td style="font-weight: 600; color: #667eea;">4.18</td>
+                            <td class="comment-age age-warning">2025-09-10 12:08 (28 days ago)</td>
+                            <td class="analysis-text">Active work in progress linked to METAL-1357 epic. Candidate patch available to remove initial reboot during firmware updates. Assignee working on additional improvements beyond patch.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-57500" class="issue-link" target="_blank">OCPBUGS-57500</a></td>
+                            <td>DPDK: ARM: MLNX Driver Disabled in RHEL DPDK Package</td>
+                            <td><span class="status-badge status-assigned">ASSIGNED</span></td>
+                            <td>Sebastian Scheinkman</td>
+                            <td style="font-weight: 600; color: #667eea;">4.18</td>
+                            <td class="comment-age age-critical">2025-07-04 08:41 (96 days ago)</td>
+                            <td class="analysis-text">Fixed in Konflux transition. DPDK ARM MLNX driver now enabled. Issue resolved for 4.18 but will appear in 4.19.z and 4.20+ when RHEL base upgrades 9.4→9.6. 96 days since resolution.</td>
+                        </tr>
+                    
+                    </tbody>
+                </table>
+                </div>
+            <!-- TELCO PRIORITY-3 ISSUES -->
+            <div class="section">
+                <h2><span class="priority-badge priority-3">Telco Priority-3</span> Issues (21 issues)</h2>
+        
+                <h3>4.14 Release (7 issues)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 8%;">Issue</th>
+                            <th style="width: 25%;">Summary</th>
+                            <th style="width: 7%;">Status</th>
+                            <th style="width: 10%;">Assignee</th>
+                            <th style="width: 8%;">Versions</th>
+                            <th style="width: 10%;">Comment Age</th>
+                            <th style="width: 32%;">Analysis</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-36197" class="issue-link" target="_blank">OCPBUGS-36197</a></td>
+                            <td>Registration Error in BMH resources that is happening during scale in/out process in ACM/ZTP approach deployed spoke cluster</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Himanshu Roy</td>
+                            <td style="font-weight: 600; color: #667eea;">4.14</td>
+                            <td class="comment-age age-warning">2025-09-08 10:50 (30 days ago)</td>
+                            <td class="analysis-text">Blocked on customer response. BMH registration errors during scale operations. Assignee requested must-gather and logs 30 days ago - awaiting customer data.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-54764" class="issue-link" target="_blank">OCPBUGS-54764</a></td>
+                            <td>Allow customers to change CR names in ZTP cluster-compare reference</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Jim Ramsay</td>
+                            <td style="font-weight: 600; color: #667eea;">4.14, 4.16, 4.18</td>
+                            <td class="comment-age age-normal">No comments (Created: 2025-04-09)</td>
+                            <td class="analysis-text">New issue with no comments. Enhancement request to allow custom CR names in ZTP cluster-compare reference files.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-52906" class="issue-link" target="_blank">OCPBUGS-52906</a></td>
+                            <td>Extra PtpConfigGmWpc.yaml in cluster-compare reference files</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Abraham Miller</td>
+                            <td style="font-weight: 600; color: #667eea;">4.14, 4.15, 4.17</td>
+                            <td class="comment-age age-critical">2025-03-26 17:15 (196 days ago)</td>
+                            <td class="analysis-text">Low priority cosmetic issue. Extra PtpConfigGmWpc.yaml file in cluster-compare reference has no functional impact. Marked minor priority.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-48503" class="issue-link" target="_blank">OCPBUGS-48503</a></td>
+                            <td>Telco RDS needs update to supported operators</td>
+                            <td><span class="status-badge status-assigned">ASSIGNED</span></td>
+                            <td>Irina Mihai</td>
+                            <td style="font-weight: 600; color: #667eea;">4.14, 4.15, 4.16</td>
+                            <td class="comment-age age-critical">2025-07-04 20:51 (96 days ago)</td>
+                            <td class="analysis-text">Documentation update in progress. GitLab merge request activity for updating Telco RDS supported operator versions. Last activity 96 days ago.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-48088" class="issue-link" target="_blank">OCPBUGS-48088</a></td>
+                            <td>ClusterLogNS.yaml ZTP source-cr is Missing the Monitoring Label</td>
+                            <td><span class="status-badge status-modified">MODIFIED</span></td>
+                            <td>Irina Mihai</td>
+                            <td style="font-weight: 600; color: #667eea;">4.14</td>
+                            <td class="comment-age age-critical">2025-06-17 12:41 (113 days ago)</td>
+                            <td class="analysis-text">Status MODIFIED. ClusterLogNS.yaml missing monitoring label fix completed but dropped from advisory RHEA-2025:145129. 113 days since last update.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-62705" class="issue-link" target="_blank">OCPBUGS-62705</a></td>
+                            <td>Cluster Compare - non-RT kernel show deviation for RAN RDS</td>
+                            <td><span class="status-badge status-modified">MODIFIED</span></td>
+                            <td>Jim Ramsay</td>
+                            <td style="font-weight: 600; color: #667eea;">4.14, 4.16, 4.18</td>
+                            <td class="comment-age age-normal">2025-10-03 19:16 (5 days ago)</td>
+                            <td class="analysis-text">Status MODIFIED. Cluster compare shows false deviation for non-RT kernel in RAN RDS. Fix ready, awaiting Target Backport Versions completion.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-62715" class="issue-link" target="_blank">OCPBUGS-62715</a></td>
+                            <td>Cluster Compare - non-RT kernel show deviation for RAN RDS</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Jim Ramsay</td>
+                            <td style="font-weight: 600; color: #667eea;">4.14, 4.16, 4.18</td>
+                            <td class="comment-age age-normal">No comments (Created: 2025-10-03)</td>
+                            <td class="analysis-text">New issue with no comments. Duplicate/related to OCPBUGS-62705 - cluster compare non-RT kernel deviation for RAN RDS.</td>
+                        </tr>
+                    
+                    </tbody>
+                </table>
+                
+                <h3>4.16 Release (9 issues)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 8%;">Issue</th>
+                            <th style="width: 25%;">Summary</th>
+                            <th style="width: 7%;">Status</th>
+                            <th style="width: 10%;">Assignee</th>
+                            <th style="width: 8%;">Versions</th>
+                            <th style="width: 10%;">Comment Age</th>
+                            <th style="width: 32%;">Analysis</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-57288" class="issue-link" target="_blank">OCPBUGS-57288</a></td>
+                            <td>Reboot_Required annotation is not removed even after sriov resources are deleted</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Balazs Nemeth</td>
+                            <td style="font-weight: 600; color: #667eea;">4.16</td>
+                            <td class="comment-age age-normal">No comments (Created: 2025-06-10)</td>
+                            <td class="analysis-text">New issue with no comments or activity. SR-IOV networking component needs investigation for Reboot_Required annotation cleanup issue.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-56865" class="issue-link" target="_blank">OCPBUGS-56865</a></td>
+                            <td>Tolerate avoidBuggyIPs option within IPAddressPool</td>
+                            <td><span class="status-badge status-modified">MODIFIED</span></td>
+                            <td>Jim Ramsay</td>
+                            <td style="font-weight: 600; color: #667eea;">4.16</td>
+                            <td class="comment-age age-critical">2025-06-15 20:43 (115 days ago)</td>
+                            <td class="analysis-text">Status MODIFIED but stalled. Only automated GitLab bot comments about merge requests. No meaningful human activity in 115 days.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-54381" class="issue-link" target="_blank">OCPBUGS-54381</a></td>
+                            <td>PGT doest not allow `watch` as evaluation interval</td>
+                            <td><span class="status-badge status-modified">MODIFIED</span></td>
+                            <td>Saeid Askari</td>
+                            <td style="font-weight: 600; color: #667eea;">4.16</td>
+                            <td class="comment-age age-critical">2025-06-17 12:41 (113 days ago)</td>
+                            <td class="analysis-text">Status MODIFIED. Dropped from advisory RHEA-2025:145129. No follow-up activity in 113 days.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-48534" class="issue-link" target="_blank">OCPBUGS-48534</a></td>
+                            <td>Ironic SSL certificate uses "metal3-ironic" as CN, causing trouble to some BMC vendors</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Iury Gregory Melo Ferreira</td>
+                            <td style="font-weight: 600; color: #667eea;">4.16</td>
+                            <td class="comment-age age-critical">2025-07-11 12:33 (89 days ago)</td>
+                            <td class="analysis-text">Blocked waiting for customer response. HP ARM hardware has SSL certificate CN issue with BMC vendors. Assignee asked critical questions about provisioning network and subjectAltName 89 days ago - no customer response received.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-37191" class="issue-link" target="_blank">OCPBUGS-37191</a></td>
+                            <td>ptp4lOpts in the PtpConfigForHA source-cr with empty string value is not included in generated policy</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Jim Ramsay</td>
+                            <td style="font-weight: 600; color: #667eea;">4.16</td>
+                            <td class="comment-age age-critical">2025-07-11 20:06 (89 days ago)</td>
+                            <td class="analysis-text">Under review for relevance. Team checking if empty string handling issue still exists in current codebase. Last inquiry 89 days ago with no resolution.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-60646" class="issue-link" target="_blank">OCPBUGS-60646</a></td>
+                            <td>installPlanApproval doesn't change to Manual after a CGU</td>
+                            <td><span class="status-badge status-post">POST</span></td>
+                            <td>Abraham Miller</td>
+                            <td style="font-weight: 600; color: #667eea;">4.16</td>
+                            <td class="comment-age age-normal">2025-09-29 17:43 (9 days ago)</td>
+                            <td class="analysis-text">Customer configuration issue identified. Started with unsupported Automatic installPlanApproval instead of recommended Manual setting. Deviates from RDS best practices.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-50689" class="issue-link" target="_blank">OCPBUGS-50689</a></td>
+                            <td>BMH fails inspecting on ARM SNO due to incorrect boot order (HP)</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Jacob Anders</td>
+                            <td style="font-weight: 600; color: #667eea;">4.16, 4.18, 4.19</td>
+                            <td class="comment-age age-normal">2025-10-02 21:41 (6 days ago)</td>
+                            <td class="analysis-text">On hold - test hardware cnfdg37 currently allocated to other work. HP ARM SNO boot order issue needs 1-2 days exclusive hardware access for debugging. Partial workaround found with manual UefiTargetBootSourceOverride to USB.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-39292" class="issue-link" target="_blank">OCPBUGS-39292</a></td>
+                            <td>[4.16 RAN RDS] Add Console Disable to the Cluster Tuning Section</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Bill Zvonar</td>
+                            <td style="font-weight: 600; color: #667eea;">4.16</td>
+                            <td class="comment-age age-normal">2025-10-01 14:22 (7 days ago)</td>
+                            <td class="analysis-text">Stalled - assignee queried 7 days ago but no response. RAN RDS needs Console Disable documentation in Cluster Tuning section.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-38140" class="issue-link" target="_blank">OCPBUGS-38140</a></td>
+                            <td>Composable openshift : cluster capabilities mismatch between RAN RDS and ZTP</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Jim Ramsay</td>
+                            <td style="font-weight: 600; color: #667eea;">4.16</td>
+                            <td class="comment-age age-critical">2025-08-08 11:48 (61 days ago)</td>
+                            <td class="analysis-text">Documentation gap identified. OLM and Ingress capabilities should be explicitly listed in RAN RDS but currently missing. Requires RDS update. 61 days since last inquiry.</td>
+                        </tr>
+                    
+                    </tbody>
+                </table>
+                
+                <h3>4.17 Release (2 issues)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 8%;">Issue</th>
+                            <th style="width: 25%;">Summary</th>
+                            <th style="width: 7%;">Status</th>
+                            <th style="width: 10%;">Assignee</th>
+                            <th style="width: 8%;">Versions</th>
+                            <th style="width: 10%;">Comment Age</th>
+                            <th style="width: 32%;">Analysis</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-42657" class="issue-link" target="_blank">OCPBUGS-42657</a></td>
+                            <td>[release-4.17] Update Telco RAN reference with ClusterInstance scale data</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Ian Miller</td>
+                            <td style="font-weight: 600; color: #667eea;">4.17, 4.18</td>
+                            <td class="comment-age age-critical">2024-10-01 16:22 (372 days ago)</td>
+                            <td class="analysis-text">Assigned but no progress. Update Telco RAN reference with ClusterInstance scale data. No activity for 372 days since assignment.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-62804" class="issue-link" target="_blank">OCPBUGS-62804</a></td>
+                            <td>[release-4.18] Reference config does not verify cgroup and crun</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Abraham Miller</td>
+                            <td style="font-weight: 600; color: #667eea;">4.16, 4.17, 4.18</td>
+                            <td class="comment-age age-normal">No comments (Created: 2025-10-07)</td>
+                            <td class="analysis-text">New issue with no comments. Reference configuration validation missing cgroup and crun verification checks.</td>
+                        </tr>
+                    
+                    </tbody>
+                </table>
+                
+                <h3>4.18 Release (3 issues)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 8%;">Issue</th>
+                            <th style="width: 25%;">Summary</th>
+                            <th style="width: 7%;">Status</th>
+                            <th style="width: 10%;">Assignee</th>
+                            <th style="width: 8%;">Versions</th>
+                            <th style="width: 10%;">Comment Age</th>
+                            <th style="width: 32%;">Analysis</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-59904" class="issue-link" target="_blank">OCPBUGS-59904</a></td>
+                            <td>Tolerate "k8s.v1.cni.cncf.io/resourceName" annotation added to NetworkAttachmentDefinition</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Jim Ramsay</td>
+                            <td style="font-weight: 600; color: #667eea;">4.18</td>
+                            <td class="comment-age age-normal">No comments (Created: 2025-07-29)</td>
+                            <td class="analysis-text">New issue with no comments. NetworkAttachmentDefinition annotation tolerance needed for cluster-compare tool.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-59903" class="issue-link" target="_blank">OCPBUGS-59903</a></td>
+                            <td>Tolerate "kernelPageSize" parameter in PerformanceProfile</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Jim Ramsay</td>
+                            <td style="font-weight: 600; color: #667eea;">4.18</td>
+                            <td class="comment-age age-normal">No comments (Created: 2025-07-29)</td>
+                            <td class="analysis-text">New issue with no comments. PerformanceProfile kernelPageSize parameter tolerance needed for cluster-compare tool.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-59292" class="issue-link" target="_blank">OCPBUGS-59292</a></td>
+                            <td>Cluster-monitoring label "true" added when CR is applied</td>
+                            <td><span class="status-badge status-assigned">ASSIGNED</span></td>
+                            <td>Abraham Miller</td>
+                            <td style="font-weight: 600; color: #667eea;">4.18</td>
+                            <td class="comment-age age-normal">No comments (Created: 2025-07-14)</td>
+                            <td class="analysis-text">New issue with no comments. Cluster-monitoring label automatically set to "true" when CR applied - needs investigation for ZTP behavior.</td>
+                        </tr>
+                    
+                    </tbody>
+                </table>
+                </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <p><strong>Deployment and Lifecycle Stale Issues Analysis Report</strong> | Generated on October 08, 2025</p>
+            <p>Staleness Threshold: 5+ days | Analysis Tool: MCP JIRA Server</p>
+        </div>
+    </div>
+
+    <script>
+        function showPage(pageId) {
+            // Hide all pages
+            document.querySelectorAll('.page-section').forEach(page => {
+                page.classList.remove('active');
+            });
+            
+            // Remove active class from all buttons
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // Show selected page
+            document.getElementById(pageId).classList.add('active');
+            
+            // Add active class to clicked button
+            event.target.classList.add('active');
+        }
+
+        // Initialize charts when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            // Status Chart - showing actual JIRA issue statuses
+            const statusCtx = document.getElementById('statusChart').getContext('2d');
+            new Chart(statusCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ["New (14)", "ASSIGNED (5)", "MODIFIED (4)", "POST (1)"],
+                    datasets: [{
+                        data: [14, 5, 4, 1],
+                        backgroundColor: ['#ffc107', '#3498db', '#27ae60', '#17a2b8', '#fd7e14', '#6c757d'],
+                        borderWidth: 3,
+                        borderColor: '#ffffff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    }
+                }
+            });
+
+            // Age Distribution Chart
+            const ageCtx = document.getElementById('ageChart').getContext('2d');
+            new Chart(ageCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['0-30 days', '31-60 days', '61-90 days', '91-180 days', '180+ days'],
+                    datasets: [{
+                        label: 'Issues',
+                        data: [6, 0, 4, 5, 9],
+                        backgroundColor: ['#27ae60', '#f39c12', '#e67e22', '#e74c3c', '#8b0000'],
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Release Impact Chart
+            const releaseCtx = document.getElementById('releaseChart').getContext('2d');
+            new Chart(releaseCtx, {
+                type: 'bar',
+                data: {
+                    labels: ["4.14", "4.16", "4.17", "4.18"],
+                    datasets: [{
+                        label: 'Stale Issues',
+                        data: [7, 9, 2, 6],
+                        backgroundColor: '#667eea',
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1
+                            }
+                        }
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+</html>

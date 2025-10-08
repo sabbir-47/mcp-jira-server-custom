@@ -13,11 +13,13 @@ Requirements:
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 import sys
 import time
+import traceback
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
@@ -26,6 +28,18 @@ try:
 except ImportError:
     print("FastMCP library not found. Install with: pip install fastmcp", file=sys.stderr)
     exit(1)
+
+# Import team configurations
+try:
+    from team_configs import (
+        get_team_config,
+        list_available_teams,
+        get_default_team,
+        TeamConfig,
+        TEAM_REGISTRY
+    )
+except ImportError:
+    print("Warning: team_configs module not found. Team-based configuration will not be available.", file=sys.stderr)
 
 try:
     from jira import JIRA
@@ -109,6 +123,45 @@ async def rate_limit():
     # Update tracking variables
     last_api_call = time.time()
     burst_count += 1
+
+
+@app.tool()
+async def jira_list_teams() -> str:
+    """
+    List all available teams with their configurations.
+    
+    Each team has predefined:
+    - Default projects to monitor
+    - Default components to track
+    - Priority field and values
+    - Report title templates
+    
+    Returns:
+        Formatted list of available teams with their configurations
+    """
+    try:
+        teams = list_available_teams()
+        
+        result = "🏢 **Available Teams for JIRA Monitoring**\n"
+        result += "="*60 + "\n\n"
+        
+        for team in teams:
+            result += f"**Team:** {team['team_name']} (ID: `{team['team_id']}`)\n"
+            result += f"**Description:** {team['description']}\n"
+            result += f"**Default Projects:** {team['default_projects']}\n"
+            result += f"**Default Components:**\n"
+            components = team['default_components'].split(', ')
+            for comp in components:
+                result += f"  • {comp}\n"
+            result += "\n" + "-"*60 + "\n\n"
+        
+        result += "\n💡 **Usage:** Pass `team_id` parameter to any stale issues function to use team-specific configuration.\n"
+        result += "   Example: `jira_find_stale_issues(team_id='ptp', days_threshold=7)`\n"
+        
+        return result
+        
+    except Exception as e:
+        return f"Error listing teams: {str(e)}"
 
 
 @app.tool()
@@ -221,8 +274,7 @@ async def jira_get_issue(issue_key: str, include_comment_analysis: bool = False)
                 result += f"      \"{content_preview}\"\n\n"
             
             result += f"💡 **Note:** {analysis['analysis_note']}"
-                
-        elif not include_comment_analysis:
+        else:
             # Simple comment display without analysis
             await rate_limit()
             comments = jira_client.comments(issue)
@@ -230,8 +282,8 @@ async def jira_get_issue(issue_key: str, include_comment_analysis: bool = False)
                 result += f"**Comments ({len(comments)}):**\n"
                 for comment in comments[-5:]:  # Show last 5 comments
                     result += f"- {comment.author.displayName} ({comment.created}): {comment.body[:200]}{'...' if len(comment.body) > 200 else ''}\n"
-        else:
-            result += "**Comments:** No comments found.\n"
+            else:
+                result += "**Comments:** No comments found.\n"
         
         return result
         
@@ -557,7 +609,10 @@ def parse_stale_issues_data(stale_data: str) -> Dict[str, Any]:
     
     current_issue = None
     i = 0
-    while i < len(lines):
+    max_iterations = len(lines) * 2  # Safety limit
+    iteration_count = 0
+    while i < len(lines) and iteration_count < max_iterations:
+        iteration_count += 1
         line = lines[i].strip()
         
         # Look for issue entries
@@ -582,7 +637,10 @@ def parse_stale_issues_data(stale_data: str) -> Dict[str, Any]:
                 
                 # Parse the following lines for issue details
                 j = i + 1
-                while j < len(lines) and not lines[j].strip().startswith("🐛 **"):
+                detail_line_count = 0
+                max_detail_lines = 100  # Safety limit
+                while j < len(lines) and detail_line_count < max_detail_lines and not lines[j].strip().startswith("🐛 **"):
+                    detail_line_count += 1
                     detail_line = lines[j].strip()
                     
                     if detail_line.startswith("📋 Status:"):
@@ -604,22 +662,68 @@ def parse_stale_issues_data(stale_data: str) -> Dict[str, Any]:
                         current_issue['comment_age'] = detail_line.split(":", 1)[1].strip()
                     elif detail_line.startswith("🔍 AI Insights:"):
                         current_issue['analysis'] = detail_line.split(":", 1)[1].strip()
+                    elif detail_line.startswith("📝 **Last") and "Comments" in detail_line:
+                        # Found comment section - parse the detailed comments
+                        comment_texts = []
+                        j += 1
+                        max_comment_lines = 50  # Safety limit to prevent infinite loops
+                        comment_line_count = 0
+                        while j < len(lines) and comment_line_count < max_comment_lines:
+                            comment_line = lines[j].strip()
+                            comment_line_count += 1
+                            
+                            # Stop if we hit the next issue or URL line or empty line
+                            if not comment_line or comment_line.startswith("🐛 **") or comment_line.startswith("🔗 URL:") or comment_line.startswith("="*10):
+                                j -= 1
+                                break
+                            # Parse comment lines (format: "1. [Author] (X days ago):")
+                            if re.match(r'^\d+\.', comment_line):
+                                # Extract just the content part
+                                if j + 1 < len(lines):
+                                    content_line = lines[j + 1].strip()
+                                    if content_line and not content_line.startswith(("🐛", "🔗", "📝", "🔍", "💬", "🕒")):
+                                        # Clean up and limit length
+                                        clean_content = content_line[:200]
+                                        comment_texts.append(clean_content)
+                                        j += 1
+                            j += 1
+                        
+                        # Override the simple "Low activity" analysis with actual comment content
+                        if comment_texts:
+                            # Format with line breaks for readability
+                            formatted_comments = []
+                            for comment_idx, text in enumerate(comment_texts[:3], 1):
+                                # Clean up text
+                                clean_text = text.strip()
+                                formatted_comments.append(f"<strong>Recent comment {comment_idx}:</strong><br>{clean_text}")
+                            current_issue['analysis'] = "<br><br>".join(formatted_comments)
+                        j -= 1  # Back up since the outer loop will increment
                     
                     j += 1
                 
-                # Organize by priority and release
+                # Update i to skip all the lines we just parsed
+                i = j - 1  # -1 because the outer loop will increment i at the end
+                
+                # Organize by priority and primary release
+                # Each issue appears only once, grouped by its primary (first) release
                 priority = current_issue['telco_priority']
-                for version in current_issue['versions']:
-                    # Extract major version (e.g., "4.16.0" -> "4.16")
-                    major_version = re.match(r'(\d+\.\d+)', version)
+                
+                if current_issue['versions']:
+                    # Use the first version as the primary release for grouping
+                    first_version = current_issue['versions'][0]
+                    major_version = re.match(r'(\d+\.\d+)', first_version)
                     if major_version:
                         release = major_version.group(1)
                         if release not in issues_by_priority[priority]:
                             issues_by_priority[priority][release] = []
                         issues_by_priority[priority][release].append(current_issue)
-                
-                # If no versions found, put in "Unknown" release
-                if not current_issue['versions']:
+                    else:
+                        # Couldn't extract version, put in Unknown
+                        if "Unknown" not in issues_by_priority[priority]:
+                            issues_by_priority[priority]["Unknown"] = []
+                        issues_by_priority[priority]["Unknown"].append(current_issue)
+                else:
+                    # No versions found, put in "Unknown" release
                     if "Unknown" not in issues_by_priority[priority]:
                         issues_by_priority[priority]["Unknown"] = []
                     issues_by_priority[priority]["Unknown"].append(current_issue)
@@ -675,11 +779,12 @@ def generate_priority_sections_html(issues_by_priority: Dict[str, Dict[str, List
                     <thead>
                         <tr>
                             <th style="width: 8%;">Issue</th>
-                            <th style="width: 28%;">Summary</th>
-                            <th style="width: 8%;">Status</th>
+                            <th style="width: 25%;">Summary</th>
+                            <th style="width: 7%;">Status</th>
                             <th style="width: 10%;">Assignee</th>
+                            <th style="width: 8%;">Versions</th>
                             <th style="width: 10%;">Comment Age</th>
-                            <th style="width: 36%;">Analysis</th>
+                            <th style="width: 32%;">Analysis</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -700,12 +805,23 @@ def generate_priority_sections_html(issues_by_priority: Dict[str, Dict[str, List
                             elif days > 14:
                                 age_class = "age-warning"
                     
+                    # Format affected versions - extract major versions only
+                    versions_display = []
+                    for v in issue['versions']:
+                        major_v = re.match(r'(\d+\.\d+)', v)
+                        if major_v:
+                            versions_display.append(major_v.group(1))
+                    # Remove duplicates and sort
+                    versions_display = sorted(set(versions_display))
+                    versions_str = ', '.join(versions_display) if versions_display else 'N/A'
+                    
                     priority_sections += f'''
                         <tr>
                             <td><a href="https://issues.redhat.com/browse/{issue['key']}" class="issue-link" target="_blank">{issue['key']}</a></td>
                             <td>{issue['summary']}</td>
                             <td><span class="status-badge status-{status_class}">{issue['status']}</span></td>
                             <td>{issue['assignee']}</td>
+                            <td style="font-weight: 600; color: #667eea;">{versions_str}</td>
                             <td class="comment-age {age_class}">{issue['comment_age']}</td>
                             <td class="analysis-text">{issue['analysis']}</td>
                         </tr>
@@ -734,10 +850,12 @@ def analyze_comments(comments: List[Any], threshold_date: datetime) -> Dict[str,
         return {
             'summary': {
                 'total_comments': 0,
+                'last_5_count': 0,
                 'unique_authors': 0,
                 'last_activity': 'No comments available',
                 'activity_level': 'None',
-                'has_recent_activity': False
+                'has_recent_activity': False,
+                'participant_list': []
             },
             'raw_comments': [],
             'ai_analysis_ready': True,
@@ -764,23 +882,54 @@ def analyze_comments(comments: List[Any], threshold_date: datetime) -> Dict[str,
             author_name = comment.author.displayName
             authors.add(author_name)
         
-        # Extract comment date
+        # Extract comment date with proper type handling
         comment_date = comment.created
         comment_dates.append(comment_date)
+        
+        # Convert comment date to datetime if it's a string
+        if isinstance(comment_date, str):
+            try:
+                # Parse JIRA date format
+                if 'T' in comment_date:
+                    comment_date = comment_date.split('T')[0] + 'T' + comment_date.split('T')[1][:19]
+                comment_date = datetime.fromisoformat(comment_date.replace('Z', '+00:00'))
+                if comment_date.tzinfo:
+                    comment_date = comment_date.replace(tzinfo=None)
+            except ValueError:
+                # If parsing fails, use current time as fallback
+                comment_date = datetime.now()
         
         # Format comment for AI analysis
         comment_for_ai = {
             'position': i,  # 1 = most recent, 5 = oldest of the 5
-            'date': comment_date.strftime('%Y-%m-%d %H:%M'),
+            'date': comment_date.strftime('%Y-%m-%d %H:%M') if comment_date else 'Unknown',
             'author': author_name,
             'content': comment.body if hasattr(comment, 'body') and comment.body else "[No content]",
-            'days_ago': (datetime.now() - comment_date.replace(tzinfo=None)).days if comment_date else None
+            'days_ago': (datetime.now() - comment_date).days if comment_date else None
         }
         
         raw_comments_for_ai.append(comment_for_ai)
     
-    # Calculate activity metrics
-    recent_comments = [c for c in sorted_comments if c.created >= threshold_date]
+    # Calculate activity metrics (need to convert dates for comparison)
+    recent_comments = []
+    for c in sorted_comments:
+        comment_created = c.created
+        # Convert to datetime if it's a string
+        if isinstance(comment_created, str):
+            try:
+                if 'T' in comment_created:
+                    comment_created = comment_created.split('T')[0] + 'T' + comment_created.split('T')[1][:19]
+                comment_created = datetime.fromisoformat(comment_created.replace('Z', '+00:00'))
+                if comment_created.tzinfo:
+                    comment_created = comment_created.replace(tzinfo=None)
+            except ValueError:
+                # If parsing fails, skip this comment
+                continue
+        
+        # Now we can safely compare datetime objects
+        if isinstance(comment_created, datetime) and comment_created >= threshold_date:
+            recent_comments.append(c)
+    
     has_recent_activity = len(recent_comments) > 0
     
     if len(recent_comments) >= 3:
@@ -795,8 +944,21 @@ def analyze_comments(comments: List[Any], threshold_date: datetime) -> Dict[str,
     if sorted_comments:
         last_comment = sorted_comments[0]
         last_author = getattr(last_comment.author, 'displayName', 'Unknown') if hasattr(last_comment, 'author') else 'Unknown'
-        days_since = (datetime.now() - last_comment.created.replace(tzinfo=None)).days
-        last_activity = f"{last_comment.created.strftime('%Y-%m-%d')} by {last_author} ({days_since} days ago)"
+        
+        # Handle last comment date with proper type checking
+        last_comment_date = last_comment.created
+        if isinstance(last_comment_date, str):
+            try:
+                if 'T' in last_comment_date:
+                    last_comment_date = last_comment_date.split('T')[0] + 'T' + last_comment_date.split('T')[1][:19]
+                last_comment_date = datetime.fromisoformat(last_comment_date.replace('Z', '+00:00'))
+                if last_comment_date.tzinfo:
+                    last_comment_date = last_comment_date.replace(tzinfo=None)
+            except ValueError:
+                last_comment_date = datetime.now()
+        
+        days_since = (datetime.now() - last_comment_date).days if last_comment_date else 0
+        last_activity = f"{last_comment_date.strftime('%Y-%m-%d')} by {last_author} ({days_since} days ago)"
     
     return {
         'summary': {
@@ -824,8 +986,9 @@ async def _find_stale_issues_core(
     additional_projects: List[str] = [],
     override_projects: List[str] = [],
     strict_bugs_only: bool = True,
-    include_comment_analysis: bool = True
-) -> str:
+    include_comment_analysis: bool = True,
+    team_id: Optional[str] = None
+):
     """Find stale Telco priority bugs with no recent comments.
     
     Args:
@@ -844,83 +1007,115 @@ async def _find_stale_issues_core(
         await init_jira_client()
     
     try:
-        # PROJECT HANDLING: Flexible project selection
-        if override_projects:
-            # User wants to search ONLY specific projects
-            project_list = ", ".join(override_projects)
-            project_clause = f'project in ({project_list})'
+        # TEAM CONFIGURATION: Load team-specific defaults if team_id provided
+        team_config = None
+        if team_id:
+            try:
+                team_config = get_team_config(team_id)
+                print(f"🏢 Using configuration for: {team_config.team_name}", file=sys.stderr)
+            except ValueError as e:
+                return {
+                    'formatted_output': f"Error: {str(e)}",
+                    'total_issues_analyzed': 0,
+                    'total_stale_issues': 0,
+                    'stale_rate': 0
+                }
         else:
-            # Use default projects + any additional ones
-            default_projects = ["OCPBUGS"]
-            all_projects = default_projects + additional_projects
-            project_list = ", ".join(all_projects)
-            project_clause = f'project in ({project_list})'
+            # Use default team (Deployment) if no team specified
+            team_config = get_default_team()
         
-        # BASE JQL with flexible projects and strict bug filtering
-        jql_parts = [
-            project_clause,
-            'status not in (Verified, ON_QA, Closed, "Release Pending")',
-            'assignee is not EMPTY'
-        ]
-        
-        jql_parts.append('cf[12323649] in ("Telco:Priority-1", "Telco:Priority-2", "Telco:Priority-3")')
-        
-        # STRICT BUG FILTERING: Only include bug-type issues
-        if strict_bugs_only:
-            jql_parts.append('issuetype = Bug')
-        
-        # COMPONENT HANDLING: Flexible component selection
-        if override_components:
-            # User wants to search ONLY specific components
-            component_list = ", ".join([f'"{comp}"' for comp in override_components])
-            jql_parts.append(f'component in ({component_list})')
+        # Check if team uses custom JQL base
+        if team_config and team_config.use_custom_jql:
+            # Team has a custom JQL base query - use it directly
+            print(f"🎯 Using custom JQL base for {team_config.team_name}", file=sys.stderr)
+            jql_base = team_config.custom_jql_base
+            
+            # Add affects_versions filter if provided
+            if affects_versions:
+                version_variants = []
+                for version in affects_versions:
+                    version_variants.append(f'"{version}"')
+                    version_variants.append(f'"{version}.z"')
+                version_list = ", ".join(version_variants)
+                jql = f'({jql_base}) AND affectedVersion in ({version_list})'
+            else:
+                jql = jql_base
+            
+            # Add ordering
+            jql += ' ORDER BY updated ASC'
+            
         else:
-            # Use default components + any additional ones
-            default_components = [
-                "GitOps ZTP",
-                "Bare Metal Hardware Provisioning / baremetal-operator", 
-                "Bare Metal Hardware Provisioning / ironic",
-                "Bare Metal Hardware Provisioning",
-                "Networking / SR-IOV",
-                "Installer / Assisted Installer",
-                "oc / cluster-compare"
+            # Standard JQL construction (for teams without custom JQL)
+            # PROJECT HANDLING: Flexible project selection
+            if override_projects:
+                # User wants to search ONLY specific projects
+                project_list = ", ".join(override_projects)
+                project_clause = f'project in ({project_list})'
+            else:
+                # Use team's default projects + any additional ones
+                default_projects = team_config.default_projects
+                all_projects = default_projects + additional_projects
+                project_list = ", ".join(all_projects)
+                project_clause = f'project in ({project_list})'
+            
+            # BASE JQL with flexible projects and strict bug filtering
+            jql_parts = [
+                project_clause,
+                'status not in (Verified, ON_QA, Closed, "Release Pending")',
+                'assignee is not EMPTY'
             ]
             
-            # Combine default and additional components
-            all_components = default_components + additional_components
-            if all_components:
-                # Filter out empty strings
-                all_components = [comp for comp in all_components if comp.strip()]
-                component_list = ", ".join([f'"{comp}"' for comp in all_components])
-                jql_parts.append(f'component in ({component_list})')
-        
-        # HARDCODED DIRECTIVE 3: Affects Version expansion (e.g., 4.18 -> 4.18, 4.18.z)
-        if affects_versions:
-            expanded_versions = []
-            for version in affects_versions:
-                # Add the base version
-                expanded_versions.append(f'"{version}"')
-                # Add the .z version  
-                expanded_versions.append(f'"{version}.z"')
+            # Add team-specific priority filtering
+            if team_config:
+                priority_clause = team_config.get_jql_priority_clause()
+                if priority_clause:
+                    jql_parts.append(priority_clause)
             
-            version_list = ", ".join(expanded_versions)
-            jql_parts.append(f'affectedVersion in ({version_list})')
+            # STRICT BUG FILTERING: Only include bug-type issues
+            if strict_bugs_only:
+                jql_parts.append('issuetype = Bug')
         
-        # Build and execute JQL query with ordering
-        base_jql = " AND ".join(jql_parts)
-        # Add ORDER BY to get consistent, predictable results
-        # Order by updated ASC to prioritize oldest/most stale issues first
-        base_jql += " ORDER BY updated ASC"
-
+            # COMPONENT HANDLING: Flexible component selection
+            if override_components:
+                # User wants to search ONLY specific components
+                component_list = ", ".join([f'"{comp}"' for comp in override_components])
+                jql_parts.append(f'component in ({component_list})')
+            else:
+                # Use team's default components + any additional ones
+                default_components = team_config.default_components
+                
+                # Combine default and additional components
+                all_components = default_components + additional_components
+                if all_components:
+                    # Filter out empty strings
+                    all_components = [comp for comp in all_components if comp.strip()]
+                    component_list = ", ".join([f'"{comp}"' for comp in all_components])
+                    jql_parts.append(f'component in ({component_list})')
+            
+            # HARDCODED DIRECTIVE 3: Affects Version expansion (e.g., 4.18 -> 4.18, 4.18.z)
+            if affects_versions:
+                expanded_versions = []
+                for version in affects_versions:
+                    # Add the base version
+                    expanded_versions.append(f'"{version}"')
+                    # Add the .z version  
+                    expanded_versions.append(f'"{version}.z"')
+                
+                version_list = ", ".join(expanded_versions)
+                jql_parts.append(f'affectedVersion in ({version_list})')
+            
+            # Build and execute JQL query with ordering
+            jql = " AND ".join(jql_parts) + " ORDER BY updated ASC"
+        
         # Increase cap to allow more results (100 max for better coverage)
-        max_results = min(max_results, 100)
-
-        logger.info(f"Executing JQL: {base_jql}")
+        max_results_cap = min(max_results, 100)
+        
+        logger.info(f"Executing JQL: {jql}")
         await rate_limit()
         # Single optimized call: get issues with comments and all needed fields
         issues = jira_client.search_issues(
-            base_jql, 
-            maxResults=max_results, 
+            jql,
+            maxResults=max_results_cap,
             expand='changelog,comments',  # Get comments in the same call!
             fields='summary,status,assignee,reporter,priority,issuetype,project,created,updated,components,versions,comment,customfield_12323649'
         )
@@ -947,7 +1142,7 @@ async def _find_stale_issues_core(
         
         # Don't show confusing preview numbers - wait until we have actual stale count
         result_preview = f"🔍 **Telco Priority Stale Issues Search**\n"
-        result_preview += f"📊 Found {len(issues)} issues (limited to {max_results} for performance)\n"
+        result_preview += f"📊 Analyzing {len(issues)} issues (limited to {max_results} for performance)\n"
         result_preview += f"⏰ Staleness threshold: {days_threshold} days\n"
         result_preview += f"{project_mode}\n"
         result_preview += f"🐛 Issue types: {'Bugs only' if strict_bugs_only else 'All types'}\n"
@@ -990,8 +1185,12 @@ async def _find_stale_issues_core(
                 else:
                     # Get the latest comment
                     latest_comment = comments[-1]
-                    # Parse the comment date (JIRA returns ISO format)
-                    comment_date_str = latest_comment.created
+                    # Parse the comment date (JIRA can return string or datetime)
+                    comment_date = latest_comment.created
+                    
+                    # Normalize to datetime object if it's a string
+                    if isinstance(comment_date, str):
+                        comment_date_str = comment_date
                     # Remove timezone info and microseconds for parsing
                     if 'T' in comment_date_str:
                         comment_date_str = comment_date_str.split('T')[0] + 'T' + comment_date_str.split('T')[1][:19]
@@ -1001,13 +1200,20 @@ async def _find_stale_issues_core(
                         # Convert to naive datetime for comparison
                         if latest_comment_date.tzinfo:
                             latest_comment_date = latest_comment_date.replace(tzinfo=None)
-                        
-                        if latest_comment_date < threshold_date:
-                            is_stale = True
                     except ValueError:
                         # If we can't parse the date, treat as stale
                         is_stale = True
                         latest_comment_date = comment_date_str
+                    else:
+                        # Already a datetime object
+                        latest_comment_date = comment_date
+                        # Convert to naive datetime for comparison
+                        if latest_comment_date.tzinfo:
+                            latest_comment_date = latest_comment_date.replace(tzinfo=None)
+                    
+                    # Compare dates
+                    if isinstance(latest_comment_date, datetime) and latest_comment_date < threshold_date:
+                        is_stale = True
                 
                 if is_stale:
                     issue_data = {
@@ -1076,7 +1282,7 @@ async def _find_stale_issues_core(
                 analysis = item['comment_analysis']
                 
                 # Compact comment info with analysis
-                result += f"   💬 Comments: {comments_count} ({analysis['unique_authors']} authors, {analysis['activity_pattern'].lower()})\n"
+                result += f"   💬 Comments: {comments_count} ({analysis['summary']['unique_authors']} authors, {analysis['summary']['activity_level'].lower()})\n"
                 
                 # Last activity with context
                 if latest_date == "No comments":
@@ -1106,29 +1312,31 @@ async def _find_stale_issues_core(
                 if ai_insights:
                     result += f"   🔍 AI Insights: {' | '.join(ai_insights)}\n"
                 
-                # Most recent comment for AI context
+                # Include full comment thread for AI analysis
                 if analysis['raw_comments']:
-                    latest_comment = analysis['raw_comments'][0]  # Position 1 is most recent
-                    preview = latest_comment['content'][:120] + "..." if len(latest_comment['content']) > 120 else latest_comment['content']
-                    result += f"   💭 Latest ({latest_comment['days_ago']}d ago): [{latest_comment['author']}] {preview}\n"
+                    result += f"\n   📝 **Last {len(analysis['raw_comments'])} Comments (for AI Analysis):**\n"
+                    for idx, comment in enumerate(analysis['raw_comments'], 1):
+                        content_preview = comment['content'][:300] if len(comment['content']) <= 300 else comment['content'][:300] + "..."
+                        result += f"      {idx}. [{comment['author']}] ({comment['days_ago']} days ago):\n"
+                        result += f"         {content_preview}\n\n"
             else:
                 # Simple comment display without analysis
                 result += f"   💬 Comments: {comments_count}\n"
-                
-                if latest_date == "No comments":
-                    result += f"   🕒 Last Activity: No comments (Created: {issue.fields.created[:10]})\n"
+            
+            if latest_date == "No comments":
+                result += f"   🕒 Last Activity: No comments (Created: {issue.fields.created[:10]})\n"
+            else:
+                if isinstance(latest_date, datetime):
+                    days_old = (datetime.now() - latest_date).days
+                    result += f"   🕒 Last Comment: {latest_date.strftime('%Y-%m-%d %H:%M')} ({days_old} days ago)\n"
                 else:
-                    if isinstance(latest_date, datetime):
-                        days_old = (datetime.now() - latest_date).days
-                        result += f"   🕒 Last Comment: {latest_date.strftime('%Y-%m-%d %H:%M')} ({days_old} days ago)\n"
-                    else:
-                        result += f"   🕒 Last Comment: {latest_date}\n"
+                    result += f"   🕒 Last Comment: {latest_date}\n"
             
             result += f"   🔗 URL: {os.getenv('JIRA_URL')}/browse/{issue.key}\n\n"
         
         # Add JQL query for manual use
         result += f"\n📝 **JQL Query Used:**\n"
-        result += f"```\n{base_jql}\n```\n"
+        result += f"```\n{jql}\n```\n"
         result += f"\n💡 **Note:** Comment date filtering is done programmatically after JQL search.\n"
         result += f"🎯 **Search Criteria:**\n"
         result += f"   • Projects: {', '.join(projects_used)}\n"
@@ -1153,17 +1361,34 @@ async def _find_stale_issues_core(
         # Clear final summary to avoid confusion
         result += f"\n" + "="*60 + "\n"
         result += f"📊 **FINAL SUMMARY:**\n"
-        result += f"🔢 **STALE ISSUES COUNT: {len(stale_issues)}**\n"
-        result += f"📋 Total issues analyzed: {len(issues)}\n"
+        result += f"🔢 **STALE ISSUES FOUND: {len(stale_issues)} out of {len(issues)} analyzed**\n"
+        result += f"📋 Total issues from JQL query: {len(issues)}\n"
+        result += f"🎯 Issues meeting staleness criteria: {len(stale_issues)}\n"
         result += f"⏰ Staleness criteria: Comments older than {days_threshold} days\n"
         result += f"="*60 + "\n"
         
-        return result
+        # Return both the formatted string and raw metrics
+        return {
+            'formatted_output': result,
+            'total_issues_analyzed': len(issues),
+            'total_stale_issues': len(stale_issues),
+            'stale_rate': int((len(stale_issues) / len(issues) * 100)) if len(issues) > 0 else 0
+        }
         
     except JIRAError as e:
-        return f"JIRA Error: {str(e)}"
+        return {
+            'formatted_output': f"JIRA Error: {str(e)}",
+            'total_issues_analyzed': 0,
+            'total_stale_issues': 0,
+            'stale_rate': 0
+        }
     except Exception as e:
-        return f"Error: {str(e)}"
+        return {
+            'formatted_output': f"Error: {str(e)}",
+            'total_issues_analyzed': 0,
+            'total_stale_issues': 0,
+            'stale_rate': 0
+        }
 
 
 @app.tool()
@@ -1177,23 +1402,25 @@ async def jira_find_stale_issues(
     additional_projects: List[str] = [],
     override_projects: List[str] = [],
     strict_bugs_only: bool = True,
-    include_comment_analysis: bool = True
+    include_comment_analysis: bool = True,
+    team_id: Optional[str] = None
 ) -> str:
-    """Find stale Telco priority bugs with no recent comments.
+    """Find stale priority bugs with no recent comments using team-specific configuration.
     
     Args:
         days_threshold: Days threshold for staleness (default: 14)
         include_no_comments: Include issues with no comments (default: True)
         affects_versions: Filter by specific versions (default: [])
         max_results: Maximum number of results (default: 50)
-        additional_components: Additional components to include with defaults (default: [])
-        override_components: If specified, search ONLY these components (ignores defaults) (default: [])
-        additional_projects: Additional projects to include with defaults (default: [])
-        override_projects: If specified, search ONLY these projects (ignores defaults) (default: [])
+        additional_components: Additional components to include with team defaults (default: [])
+        override_components: If specified, search ONLY these components (ignores team defaults) (default: [])
+        additional_projects: Additional projects to include with team defaults (default: [])
+        override_projects: If specified, search ONLY these projects (ignores team defaults) (default: [])
         strict_bugs_only: Only include bug-type issues, exclude stories/epics/tasks (default: True)
         include_comment_analysis: Include detailed comment analysis for AI processing (default: True)
+        team_id: Team identifier (e.g., 'deployment', 'ptp', 'networking'). Use jira_list_teams() to see available teams. (default: None = deployment team)
     """
-    return await _find_stale_issues_core(
+    result = await _find_stale_issues_core(
         days_threshold=days_threshold,
         include_no_comments=include_no_comments,
         affects_versions=affects_versions,
@@ -1203,8 +1430,11 @@ async def jira_find_stale_issues(
         additional_projects=additional_projects,
         override_projects=override_projects,
         strict_bugs_only=strict_bugs_only,
-        include_comment_analysis=include_comment_analysis
+        include_comment_analysis=include_comment_analysis,
+        team_id=team_id
     )
+    # Return only the formatted string for the MCP tool
+    return result['formatted_output']
 
 
 @app.tool()
@@ -1219,13 +1449,34 @@ async def jira_generate_stale_issues_report(
     override_components: List[str] = [],
     max_results: int = 100,
     include_comment_analysis: bool = True,
-    report_filename: str = "stale_issues_report.html"
+    report_filename: str = "stale_issues_report.html",
+    custom_analysis: str = "",
+    key_findings: str = "",
+    executive_summary: str = "",
+    team_id: Optional[str] = None
 ) -> str:
     """
     Generate a comprehensive HTML report for stale JIRA issues using the enhanced template.
     
-    This tool combines jira_find_stale_issues data with a professional HTML template
-    to create executive-ready reports that can be shared with stakeholders.
+    **WORKFLOW FOR AI-GENERATED ANALYSIS:**
+    
+    1. First, call jira_find_stale_issues to get issues with comments
+    2. Analyze each issue and create a summary in this EXACT format:
+    
+    ```
+    ISSUE: OCPBUGS-12345
+    ANALYSIS: Brief summary of current status, blockers, and progress
+    ---
+    ISSUE: OCPBUGS-67890
+    ANALYSIS: Another concise analysis
+    ---
+    ```
+    
+    3. Pass the entire analysis text as the 'custom_analysis' parameter
+    4. The report will use your AI analysis in the Analysis column
+    
+    **If no custom_analysis is provided:**
+    The report will show excerpts from the last 3 JIRA comments as fallback.
     
     Args:
         days_threshold: Number of days to consider an issue stale (default: 5)
@@ -1239,13 +1490,17 @@ async def jira_generate_stale_issues_report(
         max_results: Maximum number of issues to analyze (default: 100)
         include_comment_analysis: Include AI-powered comment analysis (default: True)
         report_filename: Name of the generated HTML file (default: "stale_issues_report.html")
-    
+        custom_analysis: AI-generated analysis in the format: "ISSUE: KEY\nANALYSIS: text\n---" (default: "")
+        key_findings: Key findings summary to display in the Executive Dashboard (newline-separated list) (default: "")
+        executive_summary: AI-generated executive summary narrative (plain text or multiple paragraphs separated by double newlines) (default: "")
+        team_id: Team identifier (e.g., 'deployment', 'ptp', 'networking'). Use jira_list_teams() to see available teams. (default: None = deployment team)
+
     Returns:
         Status message with report location and summary
     """
     try:
         # First, get the stale issues data using the core helper function
-        stale_data = await _find_stale_issues_core(
+        result = await _find_stale_issues_core(
             days_threshold=days_threshold,
             include_no_comments=include_no_comments,
             affects_versions=affects_versions,
@@ -1255,18 +1510,54 @@ async def jira_generate_stale_issues_report(
             additional_components=additional_components,
             override_components=override_components,
             max_results=max_results,
-            include_comment_analysis=include_comment_analysis
+            include_comment_analysis=include_comment_analysis,
+            team_id=team_id
         )
         
-        # Parse the stale data using the helper function
+        # Extract raw metrics from the result dictionary
+        total_issues_analyzed = result['total_issues_analyzed']
+        total_stale = result['total_stale_issues']
+        stale_rate = result['stale_rate']
+        stale_data = result['formatted_output']
+        
+        # Parse the stale data using the helper function (for issue details)
         parsed_data = parse_stale_issues_data(stale_data)
         
-        # Extract parsed metrics
-        total_stale = parsed_data['total_stale']
-        total_analyzed = parsed_data['total_analyzed']
-        stale_rate = parsed_data['stale_rate']
-        non_stale_count = parsed_data['non_stale_count']
+        # Use accurate metrics from the core function
+        total_analyzed = total_issues_analyzed
+        non_stale_count = total_analyzed - total_stale
         issues_by_priority = parsed_data['issues_by_priority']
+        
+        # Apply custom AI analysis if provided
+        if custom_analysis and custom_analysis.strip():
+            custom_analysis_map = {}
+            # Parse format: "ISSUE: KEY\nANALYSIS: text\n---"
+            entries = custom_analysis.strip().split('---')
+            for entry in entries:
+                entry = entry.strip()
+                if not entry:
+                    continue
+                lines = entry.split('\n')
+                issue_key = None
+                analysis_text = []
+                for line in lines:
+                    if line.startswith('ISSUE:'):
+                        issue_key = line.replace('ISSUE:', '').strip()
+                    elif line.startswith('ANALYSIS:'):
+                        analysis_text.append(line.replace('ANALYSIS:', '').strip())
+                    elif issue_key and line.strip():
+                        # Continuation of analysis
+                        analysis_text.append(line.strip())
+                
+                if issue_key and analysis_text:
+                    custom_analysis_map[issue_key] = ' '.join(analysis_text)
+            
+            # Apply custom analysis to issues
+            for priority in issues_by_priority:
+                for release in issues_by_priority[priority]:
+                    for issue in issues_by_priority[priority][release]:
+                        if issue['key'] in custom_analysis_map:
+                            issue['analysis'] = custom_analysis_map[issue['key']]
         
         # Generate HTML sections using the helper function
         priority_sections = generate_priority_sections_html(issues_by_priority)
@@ -1285,6 +1576,101 @@ async def jira_generate_stale_issues_report(
             # Default components
             report_title = "Deployment and Lifecycle Stale Issues Analysis"
         
+        # Calculate release impact data
+        release_counts = {}
+        for priority in issues_by_priority:
+            for release in issues_by_priority[priority]:
+                if release not in release_counts:
+                    release_counts[release] = 0
+                release_counts[release] += len(issues_by_priority[priority][release])
+        
+        # Sort releases and create chart data
+        sorted_releases = sorted(release_counts.keys(), key=lambda x: x if x != "Unknown" else "0.0")
+        release_labels = sorted_releases
+        release_data = [release_counts[r] for r in sorted_releases]
+        
+        # Calculate age distribution data (buckets: 0-30, 31-60, 61-90, 91-180, 180+)
+        # Count unique issues only, not per-release duplicates
+        age_buckets = [0, 0, 0, 0, 0]  # Initialize counts for each bucket
+        age_counted_issues = set()
+        current_time = datetime.now()
+        
+        for priority in issues_by_priority:
+            for release in issues_by_priority[priority]:
+                for issue_data in issues_by_priority[priority][release]:
+                    issue_key = issue_data.get('key')
+                    # Only count each unique issue once
+                    if issue_key and issue_key not in age_counted_issues:
+                        age_counted_issues.add(issue_key)
+                        # Parse comment age to calculate days
+                        comment_age_text = issue_data.get('comment_age', '')
+                        days_old = 0
+                        
+                        if 'days ago' in comment_age_text:
+                            # Extract number of days from format like "2025-10-03 (5 days ago)"
+                            match = re.search(r'\((\d+) days ago\)', comment_age_text)
+                            if match:
+                                days_old = int(match.group(1))
+                        elif 'No comments' in comment_age_text:
+                            # For issues with no comments, use creation date or set to max
+                            days_old = 365  # Assume very old for no-comment issues
+                        
+                        # Categorize into buckets
+                        if days_old <= 30:
+                            age_buckets[0] += 1
+                        elif days_old <= 60:
+                            age_buckets[1] += 1
+                        elif days_old <= 90:
+                            age_buckets[2] += 1
+                        elif days_old <= 180:
+                            age_buckets[3] += 1
+                        else:
+                            age_buckets[4] += 1
+        
+        age_distribution_data = age_buckets
+        
+        # Calculate status distribution data (count unique issues only, not per-release duplicates)
+        status_counts = {}
+        counted_issues = set()  # Track unique issues by key
+        for priority in issues_by_priority:
+            for release in issues_by_priority[priority]:
+                for issue_data in issues_by_priority[priority][release]:
+                    issue_key = issue_data.get('key')
+                    # Only count each unique issue once
+                    if issue_key and issue_key not in counted_issues:
+                        counted_issues.add(issue_key)
+                        status = issue_data.get('status', 'Unknown')
+                        if status not in status_counts:
+                            status_counts[status] = 0
+                        status_counts[status] += 1
+        
+        # Sort statuses by count (descending) and create chart data
+        sorted_statuses = sorted(status_counts.items(), key=lambda x: x[1], reverse=True)
+        status_labels = [f"{status} ({count})" for status, count in sorted_statuses]
+        status_data = [count for status, count in sorted_statuses]
+        
+        # Format key findings as HTML list if provided
+        key_findings_html = ""
+        if key_findings and key_findings.strip():
+            findings_list = [f.strip() for f in key_findings.strip().split('\n') if f.strip()]
+            if findings_list:
+                key_findings_html = "<ul style='margin-top: 15px;'>\n"
+                for finding in findings_list:
+                    # Remove leading bullet points or dashes if present
+                    finding = finding.lstrip('•-* ').strip()
+                    key_findings_html += f"                    <li>{finding}</li>\n"
+                key_findings_html += "                </ul>"
+
+        # Format executive summary as HTML paragraphs if provided
+        executive_summary_html = ""
+        if executive_summary and executive_summary.strip():
+            # Split by double newlines for paragraph breaks
+            paragraphs = [p.strip() for p in executive_summary.strip().split('\n\n') if p.strip()]
+            if paragraphs:
+                for para in paragraphs:
+                    # Each paragraph gets wrapped in <p> tags with styling
+                    executive_summary_html += f'                <p style="font-size: 1.1em; margin-bottom: 1.5rem; line-height: 1.6; color: #2c3e50;">{para}</p>\n'
+
         # Prepare template variables
         template_vars = {
             'report_title': report_title,
@@ -1301,13 +1687,20 @@ async def jira_generate_stale_issues_report(
             'generation_date': datetime.now().strftime('%B %d, %Y'),
             'include_no_comments_text': 'Yes' if include_no_comments else 'No',
             'affects_versions_text': ', '.join(affects_versions) if affects_versions else 'All versions',
-            'projects_text': ', '.join(override_projects) if override_projects else 'Default projects' + (' + ' + ', '.join(additional_projects) if additional_projects else ''),
+            'projects_text': ', '.join(override_projects) if override_projects else 'OCPBUGS' + (' + ' + ', '.join(additional_projects) if additional_projects else ''),
             'issue_types_text': 'Bugs only' if strict_bugs_only else 'All types',
             'components_text': ', '.join(override_components) if override_components else 'Default components' + (' + ' + ', '.join(additional_components) if additional_components else ''),
             'comment_analysis_text': 'Enabled' if include_comment_analysis else 'Disabled',
             'stale_data': stale_data,
             'max_results': max_results,
-            'priority_sections': priority_sections
+            'priority_sections': priority_sections,
+            'release_labels': json.dumps(release_labels),
+            'release_data': json.dumps(release_data),
+            'age_distribution_data': json.dumps(age_distribution_data),
+            'status_labels': json.dumps(status_labels),
+            'status_data': json.dumps(status_data),
+            'key_findings_content': key_findings_html,
+            'executive_summary_content': executive_summary_html
         }
         
         # Load and populate the HTML template
@@ -1354,7 +1747,11 @@ async def jira_generate_stale_issues_report(
 💡 **Usage:** This report can be shared with executives, stakeholders, or team members for comprehensive stale issues analysis."""
         
     except Exception as e:
-        return f"❌ Error generating HTML report: {str(e)}"
+        import traceback
+        error_details = traceback.format_exc()
+        logger.error(f"Error generating HTML report: {str(e)}")
+        logger.error(f"Traceback: {error_details}")
+        return f"❌ Error generating HTML report: {str(e)}\n\nDetails:\n{error_details}"
 
 
 async def main():
