@@ -55,13 +55,38 @@ logger = logging.getLogger(__name__)
 # Create FastMCP app
 app = FastMCP("JIRA Server")
 
-# Global JIRA client and rate limiting
+# =============================================================================
+# GLOBAL CONSTANTS
+# =============================================================================
+
+# Rate limiting configuration
+API_CALL_DELAY = 1.0  # Seconds between API calls
+BURST_LIMIT = 10  # Maximum consecutive burst calls allowed
+BURST_RESET_TIME = 60  # Seconds before burst counter resets
+MAX_SLEEP_TIME = 8.0  # Maximum sleep time for rate limiting (prevents timeouts)
+
+# Query defaults
+DEFAULT_DAYS_THRESHOLD = 5  # Default staleness threshold in days
+DEFAULT_MAX_RESULTS = 100  # Default maximum results to fetch
+MAX_RESULTS_CAP = 100  # Hard cap on maximum results per query
+
+# Status filters - statuses to exclude from queries
+EXCLUDED_STATUSES = ['Verified', 'ON_QA', 'Closed', 'Release Pending']
+EXCLUDED_STATUSES_JQL = 'status not in (Verified, ON_QA, Closed, "Release Pending")'
+
+# File paths
+REPORT_TEMPLATE_PATH = "templates/stale_issues_report_template.html"
+REPORT_OUTPUT_DIR = "report"
+DEFAULT_REPORT_FILENAME = "stale_issues_report.html"
+
+# =============================================================================
+# GLOBAL VARIABLES
+# =============================================================================
+
+# Global JIRA client and rate limiting tracking
 jira_client: Optional[JIRA] = None
 last_api_call = 0
-api_call_delay = 1.0  # 1 second between API calls (reduced from 2.0)
 burst_count = 0
-burst_limit = 10  # Allow more burst calls (increased from 5)
-burst_reset_time = 60  # Reset burst counter after 1 minute
 
 
 async def init_jira_client():
@@ -96,19 +121,19 @@ async def rate_limit():
     time_since_last_call = current_time - last_api_call
     
     # Reset burst counter if enough time has passed
-    if time_since_last_call > burst_reset_time:
+    if time_since_last_call > BURST_RESET_TIME:
         burst_count = 0
     
     # Calculate sleep time based on burst count
-    base_delay = api_call_delay
+    base_delay = API_CALL_DELAY
     
     # If we've made too many consecutive calls, add exponential backoff
-    if burst_count >= burst_limit:
+    if burst_count >= BURST_LIMIT:
         # Exponential backoff: 2^(burst_count - burst_limit) * base_delay
-        backoff_multiplier = 2 ** min(burst_count - burst_limit, 2)  # Cap at 4x (reduced from 16x)
+        backoff_multiplier = 2 ** min(burst_count - BURST_LIMIT, 2)  # Cap at 4x
         sleep_time = base_delay * backoff_multiplier
-        # Cap maximum sleep time at 8 seconds to prevent timeouts
-        sleep_time = min(sleep_time, 8.0)
+        # Cap maximum sleep time to prevent timeouts
+        sleep_time = min(sleep_time, MAX_SLEEP_TIME)
         logger.info(f"Rate limiting: Burst limit reached, sleeping for {sleep_time:.1f}s")
     else:
         # Regular rate limiting
@@ -292,7 +317,7 @@ async def jira_get_issue(issue_key: str, include_comment_analysis: bool = False)
 
 
 @app.tool()
-async def jira_analyze_issue_comments(issue_key: str, days_threshold: int = 5) -> str:
+async def jira_analyze_issue_comments(issue_key: str, days_threshold: int = DEFAULT_DAYS_THRESHOLD) -> str:
     """
     Perform detailed comment analysis on a specific JIRA issue.
     
@@ -977,10 +1002,10 @@ def analyze_comments(comments: List[Any], threshold_date: datetime) -> Dict[str,
 
 
 async def _find_stale_issues_core(
-    days_threshold: int = 14,
+    days_threshold: int = DEFAULT_DAYS_THRESHOLD,
     include_no_comments: bool = True,
     affects_versions: List[str] = [],
-    max_results: int = 50,
+    max_results: int = DEFAULT_MAX_RESULTS,
     additional_components: List[str] = [],
     override_components: List[str] = [],
     additional_projects: List[str] = [],
@@ -1026,9 +1051,26 @@ async def _find_stale_issues_core(
         
         # Check if team uses custom JQL base
         if team_config and team_config.use_custom_jql:
-            # Team has a custom JQL base query - use it directly
+            # Team has a custom JQL base query - populate placeholders with team config
             print(f"🎯 Using custom JQL base for {team_config.team_name}", file=sys.stderr)
-            jql_base = team_config.custom_jql_base
+            
+            # Populate custom JQL template with team config values
+            projects_str = ', '.join([f'"{p}"' for p in team_config.default_projects])
+            components_str = ', '.join([f'"{c}"' for c in team_config.default_components])
+            priority_clause = team_config.get_jql_priority_clause()
+            
+            # Handle custom JQL with or without priority clause placeholder
+            if '{priority_clause}' in team_config.custom_jql_base:
+                jql_base = team_config.custom_jql_base.format(
+                    projects=projects_str,
+                    components=components_str,
+                    priority_clause=priority_clause if priority_clause else "1=1"  # Always true condition if no priority
+                )
+            else:
+                jql_base = team_config.custom_jql_base.format(
+                    projects=projects_str,
+                    components=components_str
+                )
             
             # Add affects_versions filter if provided
             if affects_versions:
@@ -1061,7 +1103,7 @@ async def _find_stale_issues_core(
             # BASE JQL with flexible projects and strict bug filtering
             jql_parts = [
                 project_clause,
-                'status not in (Verified, ON_QA, Closed, "Release Pending")',
+                EXCLUDED_STATUSES_JQL,
                 'assignee is not EMPTY'
             ]
             
@@ -1108,7 +1150,7 @@ async def _find_stale_issues_core(
             jql = " AND ".join(jql_parts) + " ORDER BY updated ASC"
         
         # Increase cap to allow more results (100 max for better coverage)
-        max_results_cap = min(max_results, 100)
+        max_results_cap = min(max_results, MAX_RESULTS_CAP)
         
         logger.info(f"Executing JQL: {jql}")
         await rate_limit()
@@ -1342,7 +1384,7 @@ async def _find_stale_issues_core(
         result += f"   • Projects: {', '.join(projects_used)}\n"
         result += f"   • Issue Types: {'Bugs only' if strict_bugs_only else 'All types'}\n"
         result += f"   • Telco Priority: 1, 2, 3\n"
-        result += f"   • Status: Excluding Verified, ON_QA, Closed, Release Pending\n"
+        result += f"   • Status: Excluding {', '.join(EXCLUDED_STATUSES)}\n"
         result += f"   • Assignment: Only assigned issues\n"
         
         # Component criteria display
@@ -1393,10 +1435,10 @@ async def _find_stale_issues_core(
 
 @app.tool()
 async def jira_find_stale_issues(
-    days_threshold: int = 14,
+    days_threshold: int = DEFAULT_DAYS_THRESHOLD,
     include_no_comments: bool = True,
     affects_versions: List[str] = [],
-    max_results: int = 50,
+    max_results: int = DEFAULT_MAX_RESULTS,
     additional_components: List[str] = [],
     override_components: List[str] = [],
     additional_projects: List[str] = [],
@@ -1439,7 +1481,7 @@ async def jira_find_stale_issues(
 
 @app.tool()
 async def jira_generate_stale_issues_report(
-    days_threshold: int = 5,
+    days_threshold: int = DEFAULT_DAYS_THRESHOLD,
     include_no_comments: bool = True,
     affects_versions: List[str] = [],
     additional_projects: List[str] = [],
@@ -1447,9 +1489,9 @@ async def jira_generate_stale_issues_report(
     strict_bugs_only: bool = True,
     additional_components: List[str] = [],
     override_components: List[str] = [],
-    max_results: int = 100,
+    max_results: int = DEFAULT_MAX_RESULTS,
     include_comment_analysis: bool = True,
-    report_filename: str = "stale_issues_report.html",
+    report_filename: str = DEFAULT_REPORT_FILENAME,
     custom_analysis: str = "",
     key_findings: str = "",
     executive_summary: str = "",
@@ -1499,6 +1541,15 @@ async def jira_generate_stale_issues_report(
         Status message with report location and summary
     """
     try:
+        # Load team configuration
+        if team_id:
+            try:
+                team_config = get_team_config(team_id)
+            except ValueError:
+                team_config = get_default_team()
+        else:
+            team_config = get_default_team()
+        
         # First, get the stale issues data using the core helper function
         result = await _find_stale_issues_core(
             days_threshold=days_threshold,
@@ -1562,19 +1613,17 @@ async def jira_generate_stale_issues_report(
         # Generate HTML sections using the helper function
         priority_sections = generate_priority_sections_html(issues_by_priority)
         
-        # Generate dynamic report title based on components
+        # Generate dynamic report title using team config
         if override_components:
-            # User specified specific components only
-            if len(override_components) == 1:
-                report_title = f"{override_components[0]} Stale Issues Analysis"
-            else:
-                report_title = f"{', '.join(override_components)} Stale Issues Analysis"
+            # User specified specific components - use them for title
+            report_title = team_config.get_report_title(override_components)
         elif additional_components:
-            # User added additional components to defaults
-            report_title = "Deployment and Lifecycle + Custom Components Stale Issues Analysis"
+            # User added components - combine with defaults for title
+            all_components = team_config.default_components + additional_components
+            report_title = team_config.get_report_title(all_components)
         else:
-            # Default components
-            report_title = "Deployment and Lifecycle Stale Issues Analysis"
+            # Use default team name
+            report_title = team_config.get_report_title(None)
         
         # Calculate release impact data
         release_counts = {}
@@ -1704,7 +1753,7 @@ async def jira_generate_stale_issues_report(
         }
         
         # Load and populate the HTML template
-        template_path = "templates/stale_issues_report_template.html"
+        template_path = REPORT_TEMPLATE_PATH
         try:
             with open(template_path, 'r', encoding='utf-8') as f:
                 html_content = f.read()
@@ -1720,8 +1769,8 @@ async def jira_generate_stale_issues_report(
             return f"❌ Error loading template: {str(e)}"
         
         # Write the HTML file
-        report_path = f"report/{report_filename}"
-        os.makedirs("report", exist_ok=True)
+        report_path = f"{REPORT_OUTPUT_DIR}/{report_filename}"
+        os.makedirs(REPORT_OUTPUT_DIR, exist_ok=True)
         
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write(html_content)

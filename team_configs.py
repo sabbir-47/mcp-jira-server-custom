@@ -11,6 +11,24 @@ Each team has its own configuration for:
 
 from typing import List, Dict, Any, Optional
 
+# =============================================================================
+# GLOBAL CONSTANTS
+# =============================================================================
+
+# Common report title template used across all teams
+DEFAULT_REPORT_TITLE_TEMPLATE = "{team} Stale Issues Analysis"
+
+# Common Telco priority field ID used by most teams
+TELCO_PRIORITY_FIELD_ID = "customfield_12323649"
+
+# Common Telco priority values
+TELCO_PRIORITY_VALUES = [
+    "Telco:Priority-1",
+    "Telco:Priority-2",
+    "Telco:Priority-3"
+]
+
+
 class TeamConfig:
     """Configuration for a specific team's JIRA monitoring."""
     
@@ -61,16 +79,8 @@ class TeamConfig:
         return f'{self.priority_field_id} in ({priority_list})'
     
     def get_report_title(self, components: Optional[List[str]] = None) -> str:
-        """Generate report title based on components."""
-        if components:
-            component_text = ' + '.join(components)
-        else:
-            component_text = self.team_name
-        
-        return self.report_title_template.format(
-            team=self.team_name,
-            components=component_text
-        )
+        """Generate report title based on team name only."""
+        return self.report_title_template.format(team=self.team_name)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary for serialization."""
@@ -104,13 +114,9 @@ DEPLOYMENT_TEAM = TeamConfig(
         "Installer / Assisted Installer",
         "oc / cluster-compare"
     ],
-    priority_field_id="customfield_12323649",
-    priority_values=[
-        "Telco:Priority-1",
-        "Telco:Priority-2",
-        "Telco:Priority-3"
-    ],
-    report_title_template="{components} Stale Issues Analysis",
+    priority_field_id=TELCO_PRIORITY_FIELD_ID,
+    priority_values=TELCO_PRIORITY_VALUES,
+    report_title_template=DEFAULT_REPORT_TITLE_TEMPLATE,
     description="Deployment and lifecycle management components"
 )
 
@@ -119,26 +125,18 @@ DEPLOYMENT_TEAM = TeamConfig(
 PTP_TEAM = TeamConfig(
     team_name="PTP Team",
     team_id="ptp",
-    default_projects=["OCPBUGS"],
+    default_projects=["CNF"],
     default_components=[
         "Cloud Native Events / Cloud Event Proxy",
         "Cloud Native Events / Hardware Event Proxy",
         "Networking / ptp",
         "Telco Edge / HW Event Operator"
     ],
-    priority_field_id="customfield_12323649",
-    priority_values=[
-        "Telco:Priority-1",
-        "Telco:Priority-2",
-        "Telco:Priority-3"
-    ],
-    report_title_template="PTP {components} Stale Issues Analysis",
+    priority_field_id="",  # CNF project doesn't use Telco Priority custom field
+    priority_values=[],  # No priority filtering for PTP team
+    report_title_template=DEFAULT_REPORT_TITLE_TEMPLATE,
     description="Precision Time Protocol components",
-    custom_jql_base="""(
-        (project = OCPBUGS AND summary ~ "Telco PTP Release" AND issuetype = Story AND labels = telco-backport AND status != Closed)
-        OR
-        (Type in (Bug, Weakness, Vulnerability) AND Component in ("Cloud Native Events / Cloud Event Proxy", "Cloud Native Events / Hardware Event Proxy", "Networking / ptp", "Telco Edge / HW Event Operator") AND resolution = Unresolved AND Status != Verified AND Status != Done)
-    )"""
+    custom_jql_base="""((project in ({projects}) AND summary ~ "Telco PTP Release" AND issuetype = Story AND labels = telco-backport AND status != Closed) OR (Type in (Bug, Weakness, Vulnerability) AND Component in ({components}) AND resolution = Unresolved AND Status not in ("Verified", "Done")))"""
 )
 
 # Networking Team (Placeholder - to be configured later)
@@ -147,9 +145,9 @@ NETWORKING_TEAM = TeamConfig(
     team_id="networking",
     default_projects=[],  # To be configured
     default_components=[],  # To be configured
-    priority_field_id="",  # To be configured
-    priority_values=[],  # To be configured
-    report_title_template="Networking {components} Stale Issues Analysis",
+    priority_field_id=TELCO_PRIORITY_FIELD_ID,  # Using common Telco field
+    priority_values=TELCO_PRIORITY_VALUES,  # Using common Telco priorities
+    report_title_template=DEFAULT_REPORT_TITLE_TEMPLATE,
     description="Networking infrastructure components (configuration pending)",
     custom_jql_base=None  # To be configured with custom JQL if needed
 )
