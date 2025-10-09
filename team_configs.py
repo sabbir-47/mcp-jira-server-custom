@@ -110,11 +110,14 @@ DEPLOYMENT_TEAM = TeamConfig(
         "Bare Metal Hardware Provisioning / baremetal-operator",
         "Bare Metal Hardware Provisioning / ironic",
         "Bare Metal Hardware Provisioning",
+        "Bare Metal Hardware Provisioning / cluster-baremetal-operator",
+        "Baremetal Operator", 
         "Networking / SR-IOV",
         "Installer / Assisted Installer",
         "oc / cluster-compare"
     ],
-    priority_field_id=TELCO_PRIORITY_FIELD_ID,
+
+    priority_field_id=TELCO_PRIORITY_FIELD_ID, 
     priority_values=TELCO_PRIORITY_VALUES,
     report_title_template=DEFAULT_REPORT_TITLE_TEMPLATE,
     description="Deployment and lifecycle management components"
