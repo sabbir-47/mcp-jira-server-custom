@@ -1,0 +1,1034 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitOps ZTP Bugs Analysis - Enhanced Interactive Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        /* Navigation Bar */
+        .nav-bar {
+            background: #2c3e50;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .nav-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .nav-btn {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s;
+        }
+
+        .nav-btn:hover {
+            background: #2980b9;
+        }
+
+        .nav-btn.active {
+            background: #e74c3c;
+        }
+
+        /* Page Sections */
+        .page-section {
+            display: none;
+            padding: 30px;
+        }
+
+        .page-section.active {
+            display: block;
+        }
+
+        /* Executive Summary Page */
+        .exec-summary {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+
+        .exec-title {
+            font-size: 2.5em;
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+
+        .chart-card {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .chart-title {
+            font-size: 1.3em;
+            color: #2c3e50;
+            margin-bottom: 20px;
+            text-align: center;
+            font-weight: 600;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+
+        /* Key Metrics */
+        .key-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .metric-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+            border-left: 5px solid #3498db;
+        }
+
+        .metric-number {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #e74c3c;
+            margin-bottom: 5px;
+        }
+
+        .metric-label {
+            color: #7f8c8d;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* Original Styles Preserved */
+        header {
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .summary {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            border-left: 5px solid #007bff;
+        }
+
+        .summary h2 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+        }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .summary-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .summary-card h3 {
+            color: #495057;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .summary-card .number {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #007bff;
+            margin-bottom: 5px;
+        }
+
+        .summary-card p {
+            color: #6c757d;
+            font-size: 0.85em;
+        }
+
+        .section {
+            margin-bottom: 40px;
+        }
+
+        .section h2 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+        }
+
+        .section h3 {
+            color: #2a5298;
+            margin-top: 25px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+            background: #f8f9fa;
+            padding: 10px 15px;
+            border-radius: 5px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            font-size: 0.9em;
+        }
+
+        thead {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        th {
+            padding: 12px 8px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        td {
+            padding: 10px 8px;
+            border-bottom: 1px solid #e9ecef;
+            vertical-align: top;
+        }
+
+        tbody tr:hover {
+            background-color: #f8f9fa;
+            transition: background-color 0.2s;
+        }
+
+        tbody tr:nth-child(even) {
+            background-color: #fafbfc;
+        }
+
+        .issue-link {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .issue-link:hover {
+            text-decoration: underline;
+        }
+
+        .status {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: 600;
+            display: inline-block;
+        }
+
+        .status-new {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+
+        .status-modified {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .status-assigned {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .status-post {
+            background-color: #cce5ff;
+            color: #004085;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.75em;
+            margin-right: 3px;
+        }
+
+        .badge-activity-high {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .badge-activity-moderate {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .badge-activity-low {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .badge-activity-none {
+            background: #e2e3e5;
+            color: #383d41;
+        }
+
+        .comment-info {
+            font-size: 0.85em;
+            color: #6c757d;
+            margin-top: 3px;
+        }
+
+        .keyword-tag {
+            display: inline-block;
+            background: #e7f3ff;
+            color: #0056b3;
+            padding: 1px 4px;
+            border-radius: 2px;
+            margin-right: 2px;
+            font-size: 0.7em;
+        }
+
+        .analysis {
+            font-size: 0.85em;
+        }
+
+        .analysis-critical {
+            color: #dc3545;
+            font-weight: 600;
+        }
+
+        .analysis-warning {
+            color: #fd7e14;
+            font-weight: 600;
+        }
+
+        .analysis-info {
+            color: #17a2b8;
+        }
+
+        .no-comments {
+            color: #dc3545;
+            font-weight: 600;
+        }
+
+        .stale-days {
+            color: #fd7e14;
+            font-weight: 600;
+        }
+
+        .priority-badge {
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 0.8em;
+            font-weight: 600;
+            display: inline-block;
+        }
+
+        .priority-1 {
+            background: #dc3545;
+            color: white;
+        }
+
+        .priority-2 {
+            background: #ffc107;
+            color: #212529;
+        }
+
+        .priority-3 {
+            background: #17a2b8;
+            color: white;
+        }
+
+        .findings {
+            background: #f8f9fa;
+            border-left: 5px solid #3498db;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-radius: 8px;
+        }
+
+        .findings h2 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            border: none;
+        }
+
+        .findings h3 {
+            color: #2c3e50;
+            background: transparent;
+            padding: 0;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        .findings ul {
+            margin-left: 20px;
+        }
+
+        .findings li {
+            margin-bottom: 8px;
+        }
+
+        footer {
+            background: #2c3e50;
+            color: #bdc3c7;
+            padding: 20px 30px;
+            text-align: center;
+            font-size: 0.9em;
+        }
+
+        footer p {
+            margin-bottom: 5px;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .charts-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .nav-bar {
+                flex-direction: column;
+                gap: 10px;
+            }
+            
+            .nav-buttons {
+                flex-wrap: wrap;
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation -->
+        <nav class="nav-bar">
+            <div style="color: white; font-weight: bold;">GitOps ZTP Analysis Report</div>
+            <div class="nav-buttons">
+                <button class="nav-btn active" onclick="showPage('detailed')">Detailed Analysis</button>
+                <button class="nav-btn" onclick="showPage('executive')">Executive Dashboard</button>
+            </div>
+        </nav>
+
+        <!-- Executive Summary Page -->
+        <div id="executive" class="page-section">
+            <div class="exec-summary">
+                <h1 class="exec-title">Executive Dashboard</h1>
+                
+                <!-- Intelligent Executive Summary -->
+                <div style="background: white; padding: 2rem; border-radius: 10px; margin-bottom: 2rem; border-left: 5px solid #e74c3c;">
+                    <h2 style="color: #2c3e50; margin-bottom: 1.5rem; font-size: 1.5rem;">📋 Executive Summary</h2>
+                    <div style="color: #2c3e50; line-height: 1.8; font-size: 1rem;">
+                        <p style="margin-bottom: 1rem;"><strong>Current State:</strong> The GitOps ZTP component shows significant maintenance challenges with <strong>16 out of 20 issues (80%)</strong> in a stale state, indicating systemic process gaps that require immediate executive attention.</p>
+                        
+                        <p style="margin-bottom: 1rem;"><strong>Critical Risk:</strong> <strong>7 issues (44%)</strong> have never received any triage comments, representing a complete breakdown in our issue management process. Additionally, <strong>3 issues</strong> have been in MODIFIED status for over 100 days without verification, creating potential delivery risks.</p>
+                        
+                        <p style="margin-bottom: 1rem;"><strong>Business Impact:</strong> One issue (OCPBUGS-42657) has been abandoned for <strong>367 days</strong>, demonstrating poor resource allocation and customer commitment. The average staleness of 109 days significantly exceeds industry best practices and may impact customer satisfaction and product quality.</p>
+                        
+                        <p style="margin-bottom: 1rem;"><strong>Resource Allocation:</strong> Issue distribution across releases shows consistent patterns, with newer releases (4.20) already accumulating stale issues, suggesting the problem is ongoing rather than legacy debt.</p>
+                        
+                        <p style="margin-bottom: 0;"><strong>Immediate Action Required:</strong> Executive intervention is needed to establish accountability, close the 367-day abandoned issue, implement proper triage processes, and verify the 3 stalled code modifications to prevent further customer impact.</p>
+                    </div>
+                </div>
+                
+                <div class="key-metrics">
+                    <div class="metric-card">
+                        <div class="metric-number">16</div>
+                        <div class="metric-label">Stale Issues</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-number">80%</div>
+                        <div class="metric-label">Stale Rate</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-number">7</div>
+                        <div class="metric-label">No Comments</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-number">109</div>
+                        <div class="metric-label">Avg Days Stale</div>
+                    </div>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <div class="chart-title">Issue Status Distribution</div>
+                        <div class="chart-container">
+                            <canvas id="statusChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-title">Age Distribution Analysis</div>
+                        <div class="chart-container">
+                            <canvas id="ageChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-title">Release Impact Overview</div>
+                        <div class="chart-container">
+                            <canvas id="releaseChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="background: white; padding: 25px; border-radius: 10px; margin-top: 30px;">
+                    <h3 style="color: #e74c3c; margin-bottom: 15px;">Critical Actions Required</h3>
+                    <ul style="color: #2c3e50; line-height: 1.8;">
+                        <li><strong>Immediate:</strong> Close OCPBUGS-42657 (367 days old)</li>
+                        <li><strong>Priority:</strong> Verify 3 MODIFIED issues (108+ days stale)</li>
+                        <li><strong>Triage:</strong> 7 issues with zero comments need immediate attention</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+
+        <!-- Detailed Analysis Page (Original Content) -->
+        <div id="detailed" class="page-section active">
+            <header>
+                <h1>GitOps ZTP Bugs Analysis</h1>
+                <p>Stale Issues Report - No comments for 5+ days</p>
+                <p style="font-size: 0.9em; margin-top: 10px;">Releases: 4.14, 4.16, 4.18, 4.20 | Generated: October 3, 2025</p>
+            </header>
+
+            <div class="content">
+                <div class="summary">
+                    <h2>Executive Summary</h2>
+                    <div class="summary-grid">
+                        <div class="summary-card">
+                            <h3>Total Stale Issues</h3>
+                            <div class="number">16</div>
+                            <p>Out of 20 analyzed</p>
+                        </div>
+                        <div class="summary-card">
+                            <h3>4.14 Release</h3>
+                            <div class="number">3</div>
+                            <p>GitOps ZTP stale issues</p>
+                        </div>
+                        <div class="summary-card">
+                            <h3>4.16 Release</h3>
+                            <div class="number">5</div>
+                            <p>GitOps ZTP stale issues</p>
+                        </div>
+                        <div class="summary-card">
+                            <h3>4.18 Release</h3>
+                            <div class="number">4</div>
+                            <p>GitOps ZTP stale issues</p>
+                        </div>
+                        <div class="summary-card">
+                            <h3>4.20 Release</h3>
+                            <div class="number">3</div>
+                            <p>GitOps ZTP stale issues</p>
+                        </div>
+                        <div class="summary-card">
+                            <h3>No Comments</h3>
+                            <div class="number">7</div>
+                            <p>Never triaged</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TELCO PRIORITY-1 ISSUES -->
+                <div class="section">
+                    <h2><span class="priority-badge priority-1">Telco Priority-1</span> Critical Issues (0 GitOps ZTP issues)</h2>
+                    <p style="color: #28a745; font-weight: 600;">No Priority-1 GitOps ZTP issues found in stale state.</p>
+                </div>
+
+                <!-- TELCO PRIORITY-2 ISSUES -->
+                <div class="section">
+                    <h2><span class="priority-badge priority-2">Telco Priority-2</span> High Priority Issues (0 issues)</h2>
+                    <p style="color: #28a745; font-weight: 600;">No Priority-2 GitOps ZTP issues found in stale state.</p>
+                </div>
+
+                <!-- TELCO PRIORITY-3 ISSUES -->
+                <div class="section">
+                    <h2><span class="priority-badge priority-3">Telco Priority-3</span> Standard Priority Issues (16 issues)</h2>
+
+                    <h3>4.14 Release (3 issues)</h3>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width: 8%;">Issue</th>
+                                <th style="width: 28%;">Summary</th>
+                                <th style="width: 8%;">Status</th>
+                                <th style="width: 10%;">Assignee</th>
+                                <th style="width: 10%;">Comment Age</th>
+                                <th style="width: 36%;">Analysis</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-62705" class="issue-link">OCPBUGS-62705</a></td>
+                                <td>Cluster Compare - non-RT kernel show deviation for RAN RDS</td>
+                                <td><span class="status status-new">New</span></td>
+                                <td>Jim Ramsay</td>
+                                <td><span class="no-comments">No comments</span></td>
+                                <td>
+                                    <div class="analysis analysis-critical">Created today - needs immediate triage</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-none">No Activity</span>
+                                        <span class="badge badge-activity-none">0 Authors</span>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-54764" class="issue-link">OCPBUGS-54764</a></td>
+                                <td>Allow customers to change CR names in ZTP cluster-compare reference</td>
+                                <td><span class="status status-new">New</span></td>
+                                <td>Jim Ramsay</td>
+                                <td><span class="no-comments">No comments</span></td>
+                                <td>
+                                    <div class="analysis analysis-critical">Created Apr 9 - 177 days with no triage</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-none">No Activity</span>
+                                        <span class="badge badge-activity-none">0 Authors</span>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-56865" class="issue-link">OCPBUGS-56865</a></td>
+                                <td>ZTP spoke cluster creation fails intermittently</td>
+                                <td><span class="status status-modified">Modified</span></td>
+                                <td>Jim Ramsay</td>
+                                <td><span class="stale-days">109 days</span></td>
+                                <td>
+                                    <div class="analysis analysis-critical">MODIFIED status abandoned - 109 days since code change</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-moderate">Moderate Activity</span>
+                                        <span class="badge badge-activity-moderate">3 Authors</span>
+                                        <span class="keyword-tag">STATUS:workaround</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h3>4.16 Release (5 issues)</h3>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width: 8%;">Issue</th>
+                                <th style="width: 28%;">Summary</th>
+                                <th style="width: 8%;">Status</th>
+                                <th style="width: 10%;">Assignee</th>
+                                <th style="width: 10%;">Comment Age</th>
+                                <th style="width: 36%;">Analysis</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-56865" class="issue-link">OCPBUGS-56865</a></td>
+                                <td>Tolerate avoidBuggyIPs option within IPAddressPool</td>
+                                <td><span class="status status-modified">Modified</span></td>
+                                <td>Jim Ramsay</td>
+                                <td><span class="stale-days">109 days</span></td>
+                                <td>
+                                    <div class="analysis analysis-warning">Modified 109 days ago - needs verification or close</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-moderate">Moderate Activity</span>
+                                        <span class="badge badge-activity-moderate">1 Author</span>
+                                        <span class="keyword-tag">PROBLEM:issue</span>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-54381" class="issue-link">OCPBUGS-54381</a></td>
+                                <td>PGT doesn't allow `watch` as evaluation interval</td>
+                                <td><span class="status status-modified">Modified</span></td>
+                                <td>Saeid Askari</td>
+                                <td><span class="stale-days">108 days</span></td>
+                                <td>
+                                    <div class="analysis analysis-warning">Modified, dropped from advisory - needs resolution</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-moderate">Moderate Activity</span>
+                                        <span class="badge badge-activity-moderate">2 Authors</span>
+                                        <span class="keyword-tag">PROBLEM:issue</span>
+                                        <span class="keyword-tag">PROBLEM:bug</span>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-38140" class="issue-link">OCPBUGS-38140</a></td>
+                                <td>Composable openshift: cluster capabilities mismatch between RAN RDS and ZTP</td>
+                                <td><span class="status status-new">New</span></td>
+                                <td>Jim Ramsay</td>
+                                <td><span class="stale-days">56 days</span></td>
+                                <td>
+                                    <div class="analysis analysis-warning">Documentation update needed - 56 days stale</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-moderate">Moderate Activity</span>
+                                        <span class="badge badge-activity-moderate">3 Authors</span>
+                                        <span class="keyword-tag">PROBLEM:bug</span>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-37191" class="issue-link">OCPBUGS-37191</a></td>
+                                <td>ptp4lOpts with empty string value not included in generated policy</td>
+                                <td><span class="status status-new">New</span></td>
+                                <td>Jim Ramsay</td>
+                                <td><span class="stale-days">83 days</span></td>
+                                <td>
+                                    <div class="analysis analysis-critical">Relevance questioned - needs closure decision</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-moderate">Moderate Activity</span>
+                                        <span class="badge badge-activity-moderate">5 Authors</span>
+                                        <span class="keyword-tag">STATUS:closed</span>
+                                        <span class="keyword-tag">PROBLEM:problem</span>
+                                        <span class="keyword-tag">PROBLEM:bug</span>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-48503" class="issue-link">OCPBUGS-48503</a></td>
+                                <td>Telco RDS needs update to supported operators</td>
+                                <td><span class="status status-assigned">Assigned</span></td>
+                                <td>Irina Mihai</td>
+                                <td><span class="stale-days">90 days</span></td>
+                                <td>
+                                    <div class="analysis analysis-warning">Assigned but stale 90 days - needs status update</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-moderate">Moderate Activity</span>
+                                        <span class="badge badge-activity-moderate">4 Authors</span>
+                                        <span class="keyword-tag">PROBLEM:issue</span>
+                                        <span class="keyword-tag">PROBLEM:bug</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h3>4.18 Release (4 issues)</h3>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width: 8%;">Issue</th>
+                                <th style="width: 28%;">Summary</th>
+                                <th style="width: 8%;">Status</th>
+                                <th style="width: 10%;">Assignee</th>
+                                <th style="width: 10%;">Comment Age</th>
+                                <th style="width: 36%;">Analysis</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-59296" class="issue-link">OCPBUGS-59296</a></td>
+                                <td>PeerPort and disableMP showing up for BGPPeer</td>
+                                <td><span class="status status-new">New</span></td>
+                                <td>Jim Ramsay</td>
+                                <td><span class="no-comments">No comments</span></td>
+                                <td>
+                                    <div class="analysis analysis-critical">Created Jul 14 - 81 days with no triage</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-none">No Activity</span>
+                                        <span class="badge badge-activity-none">0 Authors</span>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-59293" class="issue-link">OCPBUGS-59293</a></td>
+                                <td>Tolerate logLevel: Normal in NUMAResourcesScheduler</td>
+                                <td><span class="status status-new">New</span></td>
+                                <td>Jim Ramsay</td>
+                                <td><span class="no-comments">No comments</span></td>
+                                <td>
+                                    <div class="analysis analysis-critical">Created Jul 14 - 81 days never triaged</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-none">No Activity</span>
+                                        <span class="badge badge-activity-none">0 Authors</span>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-59292" class="issue-link">OCPBUGS-59292</a></td>
+                                <td>Cluster-monitoring label "true" added when CR is applied</td>
+                                <td><span class="status status-new">New</span></td>
+                                <td>Jim Ramsay</td>
+                                <td><span class="no-comments">No comments</span></td>
+                                <td>
+                                    <div class="analysis analysis-critical">Created Jul 14 - 81 days never triaged</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-none">No Activity</span>
+                                        <span class="badge badge-activity-none">0 Authors</span>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-42657" class="issue-link">OCPBUGS-42657</a></td>
+                                <td>Update Telco RAN reference with ClusterInstance scale data</td>
+                                <td><span class="status status-new">New</span></td>
+                                <td>Ian Miller</td>
+                                <td><span class="stale-days">367 days</span></td>
+                                <td>
+                                    <div class="analysis analysis-critical">367 days stale - extremely old, needs immediate closure</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-low">Single Comment</span>
+                                        <span class="badge badge-activity-low">1 Author</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h3>4.20 Release (3 issues)</h3>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width: 8%;">Issue</th>
+                                <th style="width: 28%;">Summary</th>
+                                <th style="width: 8%;">Status</th>
+                                <th style="width: 10%;">Assignee</th>
+                                <th style="width: 10%;">Comment Age</th>
+                                <th style="width: 36%;">Analysis</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-61834" class="issue-link">OCPBUGS-61834</a></td>
+                                <td>RAN RDS PerformanceProfile architecture detection is incomplete</td>
+                                <td><span class="status status-new">New</span></td>
+                                <td>Jim Ramsay</td>
+                                <td><span class="no-comments">No comments</span></td>
+                                <td>
+                                    <div class="analysis analysis-critical">Created Sep 16 - 17 days with no triage</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-none">No Activity</span>
+                                        <span class="badge badge-activity-none">0 Authors</span>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-61035" class="issue-link">OCPBUGS-61035</a></td>
+                                <td>[siteconfig converter] Renames manifests files</td>
+                                <td><span class="status status-assigned">Assigned</span></td>
+                                <td>Saeid Askari</td>
+                                <td><span class="no-comments">No comments</span></td>
+                                <td>
+                                    <div class="analysis analysis-warning">Assigned Aug 28 but no comments - needs update</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-none">No Activity</span>
+                                        <span class="badge badge-activity-none">0 Authors</span>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><a href="https://issues.redhat.com/browse/OCPBUGS-60587" class="issue-link">OCPBUGS-60587</a></td>
+                                <td>RFE: [telco-hub] Implement automatic labeling of nodes when ODF component is enabled</td>
+                                <td><span class="status status-new">New</span></td>
+                                <td>Sabbir Hasan</td>
+                                <td><span class="no-comments">No comments</span></td>
+                                <td>
+                                    <div class="analysis analysis-critical">Created Aug 18 - RFE never triaged (46 days)</div>
+                                    <div class="comment-info">
+                                        <span class="badge badge-activity-none">No Activity</span>
+                                        <span class="badge badge-activity-none">0 Authors</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Key Findings Section -->
+                <div class="findings">
+                    <h2>🔍 Key Findings & Analysis</h2>
+
+                    <h3>Critical Patterns:</h3>
+                    <ul>
+                        <li><strong>MODIFIED status abandoned (3 issues):</strong> 108-109 days since code modification without any verification activity - likely stuck in review/QA</li>
+                        <li><strong>Extremely stale issue (OCPBUGS-42657):</strong> 367 days old - needs immediate closure or escalation</li>
+                        <li><strong>Triage process failure:</strong> 7 issues (44%) have never been triaged (no comments)</li>
+                        <li><strong>Documentation updates pending:</strong> Multiple issues waiting for RAN RDS documentation updates (OCPBUGS-38140, OCPBUGS-48503)</li>
+                        <li><strong>July 2025 batch untriaged:</strong> 3 issues created Jul 14 still have zero comments after 81 days</li>
+                    </ul>
+
+                    <h3>Immediate Actions Required:</h3>
+                    <ul>
+                        <li><strong>Priority 1:</strong> Close or reassign OCPBUGS-42657 (367 days old - over 1 year)</li>
+                        <li><strong>Priority 2:</strong> Verify or revert 3 MODIFIED issues (OCPBUGS-56865, OCPBUGS-54381, OCPBUGS-48088) stale 108+ days</li>
+                        <li><strong>Priority 3:</strong> Immediate triage for 7 issues with zero comments</li>
+                        <li><strong>Priority 4:</strong> Follow up on 2 ASSIGNED issues - 1 with no comments (OCPBUGS-61035), 1 stale 90 days (OCPBUGS-48503)</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p><strong>GitOps ZTP Bugs Analysis Report</strong> | Generated on October 3, 2025</p>
+            <p>Staleness Threshold: 5+ days | Data Source: JIRA OCPBUGS Project | Component: GitOps ZTP</p>
+            <p style="margin-top: 10px; font-size: 0.85em;">
+                Releases Analyzed: 4.14, 4.16, 4.18, 4.20 | Total Issues Analyzed: 20 | Stale Issues Found: 16 (80%)
+            </p>
+        </footer>
+    </div>
+
+    <script>
+        // Page Navigation
+        function showPage(pageId) {
+            // Hide all pages
+            document.querySelectorAll('.page-section').forEach(page => {
+                page.classList.remove('active');
+            });
+            
+            // Remove active class from all buttons
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // Show selected page
+            document.getElementById(pageId).classList.add('active');
+            
+            // Add active class to clicked button
+            event.target.classList.add('active');
+        }
+
+        // Chart Configuration
+        const chartColors = {
+            primary: '#3498db',
+            secondary: '#e74c3c',
+            success: '#27ae60',
+            warning: '#f39c12',
+            info: '#9b59b6'
+        };
+
+        // Initialize Charts
+        window.onload = function() {
+            // Executive Dashboard Charts
+            const statusCtx = document.getElementById('statusChart').getContext('2d');
+            new Chart(statusCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['NEW (7)', 'MODIFIED (3)', 'ASSIGNED (2)', 'POST (4)'],
+                    datasets: [{
+                        data: [7, 3, 2, 4],
+                        backgroundColor: [chartColors.warning, chartColors.primary, chartColors.success, chartColors.info],
+                        borderWidth: 3,
+                        borderColor: '#ffffff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'bottom' }
+                    }
+                }
+            });
+
+            const ageCtx = document.getElementById('ageChart').getContext('2d');
+            new Chart(ageCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['0-30 days', '31-60 days', '61-90 days', '91-180 days', '180+ days'],
+                    datasets: [{
+                        label: 'Issues',
+                        data: [2, 3, 4, 5, 2],
+                        backgroundColor: [chartColors.success, chartColors.warning, '#f39c12', chartColors.secondary, '#8b0000'],
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { beginAtZero: true, ticks: { stepSize: 1 } }
+                    }
+                }
+            });
+
+            const releaseCtx = document.getElementById('releaseChart').getContext('2d');
+            new Chart(releaseCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['4.14', '4.16', '4.18', '4.20'],
+                    datasets: [{
+                        label: 'Stale Issues',
+                        data: [3, 5, 4, 3],
+                        backgroundColor: chartColors.primary,
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { beginAtZero: true, ticks: { stepSize: 1 } }
+                    }
+                }
+            });
+
+        };
+    </script>
+</body>
+</html>

@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deployment and Lifecycle Stale Issues Analysis - Interactive Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        /* Navigation Bar */
+        .nav-bar {
+            background: #2c3e50;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .nav-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .nav-btn {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s;
+        }
+
+        .nav-btn:hover {
+            background: #2980b9;
+        }
+
+        .nav-btn.active {
+            background: #e74c3c;
+        }
+
+        /* Page Sections */
+        .page-section {
+            display: none;
+            padding: 30px;
+        }
+
+        .page-section.active {
+            display: block;
+        }
+
+        /* Executive Summary Page */
+        .exec-summary {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+
+        .exec-title {
+            font-size: 2.5em;
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+
+        .chart-card {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            min-height: 400px;
+            position: relative;
+        }
+
+        .chart-card canvas {
+            max-height: 350px;
+        }
+
+        .chart-title {
+            font-size: 1.3em;
+            color: #2c3e50;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        /* Detailed Analysis Page */
+        .section {
+            margin-bottom: 40px;
+        }
+
+        .section h2 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+        }
+
+        .section h3 {
+            color: #2a5298;
+            margin-top: 25px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+            background: #f8f9fa;
+            padding: 10px 15px;
+            border-radius: 5px;
+        }
+
+        .priority-badge {
+            padding: 8px 15px;
+            border-radius: 20px;
+            color: white;
+            font-weight: 600;
+            font-size: 0.9em;
+        }
+
+        .priority-1 {
+            background: #e74c3c;
+        }
+
+        .priority-2 {
+            background: #f39c12;
+        }
+
+        .priority-3 {
+            background: #3498db;
+        }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            font-size: 0.9em;
+        }
+
+        thead {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        th {
+            padding: 12px 8px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        td {
+            padding: 10px 8px;
+            border-bottom: 1px solid #e9ecef;
+            vertical-align: top;
+        }
+
+        tbody tr:hover {
+            background-color: #f8f9fa;
+            transition: background-color 0.2s;
+        }
+
+        tbody tr:nth-child(even) {
+            background-color: #fafbfc;
+        }
+
+        .issue-link {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .issue-link:hover {
+            text-decoration: underline;
+        }
+
+        tr:hover {
+            background-color: #f8f9fa;
+        }
+
+        .issue-link {
+            color: #3498db;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .issue-link:hover {
+            text-decoration: underline;
+        }
+
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: 600;
+        }
+
+        .status-new { background: #e74c3c; color: white; }
+        .status-assigned { background: #f39c12; color: white; }
+        .status-post { background: #9b59b6; color: white; }
+        .status-modified { background: #3498db; color: white; }
+        .status-on_qa { background: #1abc9c; color: white; }
+        .status-verified { background: #27ae60; color: white; }
+
+        .comment-age {
+            font-weight: 600;
+        }
+
+        .age-critical { color: #e74c3c; }
+        .age-warning { color: #f39c12; }
+        .age-normal { color: #27ae60; }
+
+        .analysis-text {
+            font-size: 0.9em;
+            line-height: 1.4;
+        }
+
+        .keywords {
+            margin-top: 5px;
+        }
+
+        .keyword-tag {
+            display: inline-block;
+            background: #ecf0f1;
+            color: #2c3e50;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 0.75em;
+            margin: 1px;
+        }
+
+        .keyword-urgent { background: #fadbd8; color: #c0392b; }
+        .keyword-status { background: #d5f4e6; color: #148f77; }
+        .keyword-problem { background: #fdeaa7; color: #b7950b; }
+
+        /* Key Findings */
+        .key-findings {
+            background: #f4f6f9;
+            border-left: 5px solid #3498db;
+            padding: 20px;
+            margin: 30px 0;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .key-findings h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+        }
+
+        .key-findings ul {
+            list-style-type: none;
+            padding-left: 0;
+        }
+
+        .key-findings li {
+            margin-bottom: 10px;
+            padding-left: 25px;
+            position: relative;
+        }
+
+        .key-findings li:before {
+            content: "🔍";
+            position: absolute;
+            left: 0;
+        }
+
+        /* Footer */
+        .footer {
+            background: #2c3e50;
+            color: white;
+            text-align: center;
+            padding: 20px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation Bar -->
+        <div class="nav-bar">
+            <h1 style="color: white; margin: 0;">Deployment and Lifecycle Stale Issues Analysis</h1>
+            <div class="nav-buttons">
+                <button class="nav-btn active" onclick="showPage('executive')">Executive Dashboard</button>
+                <button class="nav-btn" onclick="showPage('detailed')">Detailed Analysis</button>
+            </div>
+        </div>
+
+        <!-- Executive Dashboard -->
+        <div id="executive" class="page-section active">
+            <div class="exec-summary">
+                <h1 class="exec-title">Executive Summary</h1>
+                
+                                <p style="font-size: 1.1em; margin-bottom: 1.5rem; line-height: 1.6; color: #2c3e50;">Analysis of PTP team issues across OpenShift versions 4.14, 4.16, and 4.18 revealed 2 stale issues with no comments in the last 5 days.</p>
+                <p style="font-size: 1.1em; margin-bottom: 1.5rem; line-height: 1.6; color: #2c3e50;">OCPBUGS-62229 addresses a chrony-wait.service failure when chrony is disabled per RDS documentation. A known workaround exists in the machine config docs but needs to be integrated into telco documentation. The issue has been assigned to Michele Tomaso Costa for 6 days without progress.</p>
+                <p style="font-size: 1.1em; margin-bottom: 1.5rem; line-height: 1.6; color: #2c3e50;">OCPBUGS-62812 is a newly created issue regarding missing CLOCK_REALTIME state propagation from TGM/GNSS sources. The reporter has self-assigned the issue and identified specific code locations in logparser.go that need fixes, but the issue remains in New status.</p>
+
+                
+                <p style="font-size: 1.1em; margin-bottom: 2rem; text-align: center; color: #2c3e50;">
+                    <strong>Current State:</strong> Analysis reveals <strong>2 out of 9 issues (22%)</strong> in a stale state across 4.14, 4.16, 4.18 releases, requiring immediate attention to maintain development velocity and customer satisfaction.
+                </p>
+            </div>
+
+            <div class="charts-grid">
+                <div class="chart-card">
+                    <h3 class="chart-title">Issue Status Distribution</h3>
+                    <canvas id="statusChart"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Age Distribution Analysis</h3>
+                    <canvas id="ageChart"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Release Impact Overview</h3>
+                    <canvas id="releaseChart"></canvas>
+                </div>
+            </div>
+
+            <div class="key-findings">
+                <h3>Key Findings & Analysis</h3>
+                <ul style='margin-top: 15px;'>
+                    <li>2 stale PTP issues found across versions 4.14, 4.16, 4.18</li>
+                    <li>Both issues have zero comments despite being assigned</li>
+                    <li>OCPBUGS-62229: 13 days old, no activity since assignment (Oct 2)</li>
+                    <li>OCPBUGS-62812: Just created (Oct 7), needs immediate attention</li>
+                    <li>Both are Telco:Priority-2 issues requiring prompt action</li>
+                </ul>
+                <h4 style="margin-top: 25px; color: #2a5298;">Analysis Parameters</h4>
+                <ul>
+                    <li><strong>Stale Rate:</strong> 22% of analyzed issues are stale (threshold: 5+ days)</li>
+                    <li><strong>Scope:</strong> Analysis covers bug-type issues only across 4.14, 4.16, 4.18</li>
+                    <li><strong>Component Focus:</strong> standard component scope</li>
+                    <li><strong>Analysis Type:</strong> Advanced comment analysis enabled</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Detailed Analysis -->
+        <div id="detailed" class="page-section">
+            <div class="section">
+                <h2>Analysis Parameters</h2>
+                <ul style="list-style-type: none; padding: 0;">
+                    <li><strong>Staleness Threshold:</strong> 5 days</li>
+                    <li><strong>Include No Comments:</strong> Yes</li>
+                    <li><strong>Affects Versions:</strong> 4.14, 4.16, 4.18</li>
+                    <li><strong>Projects:</strong> OCPBUGS</li>
+                    <li><strong>Issue Types:</strong> Bugs only</li>
+                    <li><strong>Components:</strong> Default components</li>
+                    <li><strong>Max Results:</strong> 100</li>
+                    <li><strong>Comment Analysis:</strong> Enabled</li>
+                </ul>
+            </div>
+
+            
+            <!-- TELCO PRIORITY-1 ISSUES -->
+            <div class="section">
+                <h2><span class="priority-badge priority-1">Telco Priority-1</span> Issues (0 issues)</h2>
+        <p style="color: #28a745; font-weight: 600;">No Priority-1 issues found in stale state.</p></div>
+            <!-- TELCO PRIORITY-2 ISSUES -->
+            <div class="section">
+                <h2><span class="priority-badge priority-2">Telco Priority-2</span> Issues (2 issues)</h2>
+        
+                <h3>4.18 Release (2 issues)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 8%;">Issue</th>
+                            <th style="width: 25%;">Summary</th>
+                            <th style="width: 7%;">Status</th>
+                            <th style="width: 10%;">Assignee</th>
+                            <th style="width: 8%;">Versions</th>
+                            <th style="width: 10%;">Comment Age</th>
+                            <th style="width: 32%;">Analysis</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-62229" class="issue-link" target="_blank">OCPBUGS-62229</a></td>
+                            <td>[4.19] Disabling chrony according to RDS leads to problems with chrony-wait.service Inbox</td>
+                            <td><span class="status-badge status-assigned">ASSIGNED</span></td>
+                            <td>Michele Tomaso Costa</td>
+                            <td style="font-weight: 600; color: #667eea;">4.18</td>
+                            <td class="comment-age age-normal">No comments (Created: 2025-09-25)</td>
+                            <td class="analysis-text">Assigned to Michele Tomaso Costa but no progress since Oct 2. chrony-wait.service fails when chrony is disabled per RDS docs. Known workaround exists in machine config docs but needs integration into telco documentation.</td>
+                        </tr>
+                    
+                        <tr>
+                            <td><a href="https://issues.redhat.com/browse/OCPBUGS-62812" class="issue-link" target="_blank">OCPBUGS-62812</a></td>
+                            <td>Missing CLOCK_REALTIME State Propagation from TGM/GNSS Sources</td>
+                            <td><span class="status-badge status-new">New</span></td>
+                            <td>Aneesh Puttur</td>
+                            <td style="font-weight: 600; color: #667eea;">4.18</td>
+                            <td class="comment-age age-normal">No comments (Created: 2025-10-07)</td>
+                            <td class="analysis-text">Newly created issue (Oct 7), still in New status. Self-assigned by reporter Aneesh Puttur. OS clock state remains LOCKED when timing source unreliable. Missing CLOCK_REALTIME state propagation in logparser.go for TGM/GNSS sources. Specific code locations identified for fix.</td>
+                        </tr>
+                    
+                    </tbody>
+                </table>
+                </div>
+            <!-- TELCO PRIORITY-3 ISSUES -->
+            <div class="section">
+                <h2><span class="priority-badge priority-3">Telco Priority-3</span> Issues (0 issues)</h2>
+        <p style="color: #28a745; font-weight: 600;">No Priority-3 issues found in stale state.</p></div>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <p><strong>Deployment and Lifecycle Stale Issues Analysis Report</strong> | Generated on October 08, 2025</p>
+            <p>Staleness Threshold: 5+ days | Analysis Tool: MCP JIRA Server</p>
+        </div>
+    </div>
+
+    <script>
+        function showPage(pageId) {
+            // Hide all pages
+            document.querySelectorAll('.page-section').forEach(page => {
+                page.classList.remove('active');
+            });
+            
+            // Remove active class from all buttons
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // Show selected page
+            document.getElementById(pageId).classList.add('active');
+            
+            // Add active class to clicked button
+            event.target.classList.add('active');
+        }
+
+        // Initialize charts when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            // Status Chart - showing actual JIRA issue statuses
+            const statusCtx = document.getElementById('statusChart').getContext('2d');
+            new Chart(statusCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ["ASSIGNED (1)", "New (1)"],
+                    datasets: [{
+                        data: [1, 1],
+                        backgroundColor: ['#ffc107', '#3498db', '#27ae60', '#17a2b8', '#fd7e14', '#6c757d'],
+                        borderWidth: 3,
+                        borderColor: '#ffffff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    }
+                }
+            });
+
+            // Age Distribution Chart
+            const ageCtx = document.getElementById('ageChart').getContext('2d');
+            new Chart(ageCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['0-30 days', '31-60 days', '61-90 days', '91-180 days', '180+ days'],
+                    datasets: [{
+                        label: 'Issues',
+                        data: [0, 0, 0, 0, 2],
+                        backgroundColor: ['#27ae60', '#f39c12', '#e67e22', '#e74c3c', '#8b0000'],
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Release Impact Chart
+            const releaseCtx = document.getElementById('releaseChart').getContext('2d');
+            new Chart(releaseCtx, {
+                type: 'bar',
+                data: {
+                    labels: ["4.18"],
+                    datasets: [{
+                        label: 'Stale Issues',
+                        data: [2],
+                        backgroundColor: '#667eea',
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1
+                            }
+                        }
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+</html>
