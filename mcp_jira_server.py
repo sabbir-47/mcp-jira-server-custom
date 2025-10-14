@@ -34,6 +34,30 @@ except ImportError:
     print("JIRA library not found. Install with: pip install jira", file=sys.stderr)
     exit(1)
 
+# Import helper functions for detailed reports
+from helpers import (
+    parse_issue_data,
+    generate_executive_summary,
+    generate_problem_section,
+    generate_reproduction_steps_section,
+    generate_root_cause_section,
+    generate_timeline,
+    analyze_solutions_from_comments,
+    identify_blockers,
+    generate_impact_assessment,
+    generate_analysis_summary_section,
+    generate_related_issues
+)
+
+# Import team configurations and global constants
+from team_configs import (
+    TELCO_PRIORITY_FIELD_ID,
+    TELCO_PRIORITY_JQL,
+    get_team_config,
+    list_available_teams,
+    TEAM_REGISTRY
+)
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -139,13 +163,13 @@ async def jira_search_issues(jql: str, max_results: int = 50) -> str:
 
 
 @app.tool()
-async def jira_get_issue(issue_key: str, include_comment_analysis: bool = False) -> str:
+async def jira_get_issue(issue_key: str, include_comment_analysis: bool = True) -> str:
     """
     Get detailed information about a specific JIRA issue.
     
     Args:
         issue_key: The JIRA issue key (e.g., 'OCPBUGS-12345')
-        include_comment_analysis: Include AI-powered comment analysis (default: False)
+        include_comment_analysis: Include AI-powered comment analysis (default: True)
     
     Returns:
         Detailed issue information with optional comment analysis
@@ -183,7 +207,7 @@ async def jira_get_issue(issue_key: str, include_comment_analysis: bool = False)
         
         # Add Telco Priority if available
         try:
-            telco_priority = getattr(issue.fields, 'customfield_12323649', None)
+            telco_priority = getattr(issue.fields, TELCO_PRIORITY_FIELD_ID, None)
             if telco_priority:
                 if isinstance(telco_priority, list):
                     telco_priority = ', '.join([str(val) for val in telco_priority])
@@ -237,6 +261,154 @@ async def jira_get_issue(issue_key: str, include_comment_analysis: bool = False)
         
     except JIRAError as e:
         return f"JIRA Error: {str(e)}"
+
+
+@app.tool()
+async def jira_get_issue_for_report(issue_key: str) -> str:
+    """
+    Get JIRA issue data in JSON format for detailed report generation.
+    
+    This tool fetches complete issue data including comments, links, and all metadata,
+    formatted as JSON for processing by jira_generate_detailed_issue_report.
+    
+    Use this tool when you want to generate a detailed HTML report for an issue.
+    
+    Args:
+        issue_key: The JIRA issue key (e.g., 'OCPBUGS-12345')
+    
+    Returns:
+        JSON string with complete issue data including:
+        - All standard fields (summary, status, priority, etc.)
+        - Complete comment history
+        - Issue links (blocks, blocked by, duplicates, relates)
+        - Components and affected versions
+        - Custom fields
+    
+    Example:
+        Step 1: Get issue data in JSON format
+        >>> issue_json = jira_get_issue_for_report("OCPBUGS-12345")
+        
+        Step 2: Generate detailed HTML report
+        >>> jira_generate_detailed_issue_report(issue_json, "template_1")
+    """
+    if not jira_client:
+        await init_jira_client()
+    
+    try:
+        await rate_limit()
+        # Fetch issue with ALL necessary data
+        issue = jira_client.issue(
+            issue_key, 
+            expand='comments,changelog',
+            fields='*all'
+        )
+        
+        # Convert to JSON-serializable dict
+        import json
+        
+        issue_dict = {
+            'key': issue.key,
+            'fields': {
+                'summary': issue.fields.summary,
+                'status': {'name': issue.fields.status.name},
+                'priority': {'name': getattr(issue.fields.priority, 'name', 'None')},
+                'assignee': {
+                    'displayName': getattr(issue.fields.assignee, 'displayName', None)
+                } if issue.fields.assignee else None,
+                'reporter': {
+                    'displayName': getattr(issue.fields.reporter, 'displayName', 'Unknown')
+                } if issue.fields.reporter else None,
+                'created': issue.fields.created,
+                'updated': issue.fields.updated,
+                'issuetype': {'name': issue.fields.issuetype.name},
+                'description': getattr(issue.fields, 'description', ''),
+                'components': [],
+                'versions': [],
+                'labels': issue.fields.labels or [],
+                'comment': {'comments': []},
+                'issuelinks': []
+            }
+        }
+        
+        # Add components
+        if hasattr(issue.fields, 'components') and issue.fields.components:
+            issue_dict['fields']['components'] = [
+                {'name': comp.name} for comp in issue.fields.components
+            ]
+        
+        # Add affected versions
+        if hasattr(issue.fields, 'versions') and issue.fields.versions:
+            issue_dict['fields']['versions'] = [
+                {'name': ver.name} for ver in issue.fields.versions
+            ]
+        
+        # Add comments
+        if hasattr(issue.fields, 'comment') and issue.fields.comment.comments:
+            issue_dict['fields']['comment']['comments'] = [
+                {
+                    'author': {
+                        'displayName': comment.author.displayName
+                    },
+                    'body': comment.body,
+                    'created': comment.created
+                }
+                for comment in issue.fields.comment.comments
+            ]
+        
+        # Add issue links (blocks, blocked by, duplicates, relates)
+        if hasattr(issue.fields, 'issuelinks'):
+            for link in issue.fields.issuelinks:
+                link_dict = {
+                    'type': {'name': link.type.name}
+                }
+                
+                if hasattr(link, 'outwardIssue'):
+                    link_dict['outwardIssue'] = {
+                        'key': link.outwardIssue.key,
+                        'fields': {
+                            'summary': link.outwardIssue.fields.summary,
+                            'status': {'name': link.outwardIssue.fields.status.name}
+                        }
+                    }
+                
+                if hasattr(link, 'inwardIssue'):
+                    link_dict['inwardIssue'] = {
+                        'key': link.inwardIssue.key,
+                        'fields': {
+                            'summary': link.inwardIssue.fields.summary,
+                            'status': {'name': link.inwardIssue.fields.status.name}
+                        }
+                    }
+                
+                issue_dict['fields']['issuelinks'].append(link_dict)
+        
+        # Return as formatted JSON
+        json_output = json.dumps(issue_dict, indent=2)
+        
+        return f"""✅ **Issue Data Retrieved Successfully**
+
+**Issue:** {issue.key}
+**Summary:** {issue.fields.summary}
+**Status:** {issue.fields.status.name}
+
+📊 **Data Included:**
+   • Comments: {len(issue_dict['fields']['comment']['comments'])}
+   • Linked Issues: {len(issue_dict['fields']['issuelinks'])}
+   • Components: {len(issue_dict['fields']['components'])}
+   • Affected Versions: {len(issue_dict['fields']['versions'])}
+
+**JSON Data (ready for report generation):**
+```json
+{json_output}
+```
+
+💡 **Next Step:** Pass this data to `jira_generate_detailed_issue_report` to create an HTML report."""
+        
+    except JIRAError as e:
+        return f"❌ JIRA Error: {str(e)}"
+    except Exception as e:
+        import traceback
+        return f"❌ Error fetching issue: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
 
 
 @app.tool()
@@ -571,7 +743,6 @@ def parse_stale_issues_data(stale_data: str) -> Dict[str, Any]:
                     total_analyzed = int(numbers[0])
     
     # Calculate metrics
-    stale_rate = int((total_stale / total_analyzed * 100)) if total_analyzed > 0 else 0
     non_stale_count = max(0, total_analyzed - total_stale)
     
     # Parse individual issues and organize by Telco priority and release
@@ -655,7 +826,6 @@ def parse_stale_issues_data(stale_data: str) -> Dict[str, Any]:
     return {
         'total_stale': total_stale,
         'total_analyzed': total_analyzed,
-        'stale_rate': stale_rate,
         'non_stale_count': non_stale_count,
         'no_comments_count': no_comments_count,
         'issues_by_priority': issues_by_priority
@@ -879,7 +1049,7 @@ async def _find_stale_issues_core(
             'assignee is not EMPTY'
         ]
         
-        jql_parts.append('cf[12323649] in ("Telco:Priority-1", "Telco:Priority-2", "Telco:Priority-3")')
+        jql_parts.append(TELCO_PRIORITY_JQL)
         
         # STRICT BUG FILTERING: Only include bug-type issues
         if strict_bugs_only:
@@ -925,8 +1095,8 @@ async def _find_stale_issues_core(
         # Build and execute JQL query with ordering
         base_jql = " AND ".join(jql_parts)
         # Add ORDER BY to get consistent, predictable results
-        # Order by updated ASC to prioritize oldest/most stale issues first
-        base_jql += " ORDER BY updated ASC"
+        # Order by key DESC to get most recent issues first
+        base_jql += " ORDER BY key DESC"
 
         # Increase cap to allow more results (100 max for better coverage)
         max_results = min(max_results, 100)
@@ -938,7 +1108,7 @@ async def _find_stale_issues_core(
             base_jql, 
             maxResults=max_results, 
             expand='changelog,comments',  # Get comments in the same call!
-            fields='summary,status,assignee,reporter,priority,issuetype,project,created,updated,components,versions,comment,customfield_12323649'
+            fields=f'summary,status,assignee,reporter,priority,issuetype,project,created,updated,components,versions,comment,{TELCO_PRIORITY_FIELD_ID}'
         )
         
         logger.info(f"JQL returned {len(issues)} total issues for analysis")
@@ -1066,11 +1236,11 @@ async def _find_stale_issues_core(
             affected_versions = getattr(issue.fields, 'versions', [])
             version_names = [ver.name for ver in affected_versions] if affected_versions else ['No version']
             
-            # Get Telco priority from custom field cf[12323649]
+            # Get Telco priority from custom field
             telco_priority = "None"
             try:
                 # Access the custom field that contains Telco priority
-                custom_field_value = getattr(issue.fields, 'customfield_12323649', None)
+                custom_field_value = getattr(issue.fields, TELCO_PRIORITY_FIELD_ID, None)
                 if custom_field_value:
                     if isinstance(custom_field_value, list):
                         # If it's a list, join the values
@@ -1180,6 +1350,7 @@ async def jira_find_stale_issues(
     include_no_comments: bool = True,
     affects_versions: List[str] = [],
     max_results: int = 50,
+    team_id: Optional[str] = None,
     additional_components: List[str] = [],
     override_components: List[str] = [],
     additional_projects: List[str] = [],
@@ -1187,32 +1358,285 @@ async def jira_find_stale_issues(
     strict_bugs_only: bool = True,
     include_comment_analysis: bool = True
 ) -> str:
-    """Find stale Telco priority bugs with no recent comments.
+    """
+    Find stale Telco priority bugs with no recent comments.
+    
+    This unified function supports both team-based and manual searches:
+    - If team_id is provided: Uses team configuration (custom JQL, default components/projects)
+    - If team_id is not provided: Uses manual component/project specification
     
     Args:
         days_threshold: Days threshold for staleness (default: 14)
         include_no_comments: Include issues with no comments (default: True)
         affects_versions: Filter by specific versions (default: [])
         max_results: Maximum number of results (default: 50)
+        team_id: Optional team identifier (use jira_list_teams to see available teams)
+                 Examples: "deployment", "ptp", "networking"
+                 If provided, uses team's default configuration
         additional_components: Additional components to include with defaults (default: [])
         override_components: If specified, search ONLY these components (ignores defaults) (default: [])
         additional_projects: Additional projects to include with defaults (default: [])
         override_projects: If specified, search ONLY these projects (ignores defaults) (default: [])
         strict_bugs_only: Only include bug-type issues, exclude stories/epics/tasks (default: True)
         include_comment_analysis: Include detailed comment analysis for AI processing (default: True)
+    
+    Examples:
+        # Team-based search (uses team config)
+        >>> jira_find_stale_issues(team_id="networking", days_threshold=7)
+        
+        # Manual search (specify components directly)
+        >>> jira_find_stale_issues(override_components=["GitOps ZTP"], days_threshold=14)
+        
+        # Team search with additional filters
+        >>> jira_find_stale_issues(team_id="ptp", affects_versions=["4.18"], max_results=100)
     """
-    return await _find_stale_issues_core(
-        days_threshold=days_threshold,
-        include_no_comments=include_no_comments,
-        affects_versions=affects_versions,
-        max_results=max_results,
-        additional_components=additional_components,
-        override_components=override_components,
-        additional_projects=additional_projects,
-        override_projects=override_projects,
-        strict_bugs_only=strict_bugs_only,
-        include_comment_analysis=include_comment_analysis
-    )
+    if not jira_client:
+        await init_jira_client()
+    
+    # TEAM-BASED SEARCH
+    if team_id:
+        try:
+            # Get team configuration
+            team_config = get_team_config(team_id)
+            
+            logger.info(f"Finding stale issues for team: {team_config.team_name}")
+            
+            # Check if team has custom JQL
+            if team_config.use_custom_jql and team_config.custom_jql_base:
+                # Use custom JQL approach
+                custom_jql = team_config.get_full_jql(
+                    components=team_config.default_components,
+                    projects=team_config.default_projects
+                )
+                
+                # Add affects version filtering if provided
+                if affects_versions:
+                    expanded_versions = []
+                    for version in affects_versions:
+                        expanded_versions.append(f'"{version}"')
+                        expanded_versions.append(f'"{version}.z"')
+                    version_list = ", ".join(expanded_versions)
+                    custom_jql += f" AND affectedVersion in ({version_list})"
+                
+                # Add ordering
+                custom_jql += " ORDER BY key DESC"
+                
+                logger.info(f"Using custom team JQL: {custom_jql}")
+                
+                # Execute the custom JQL
+                await rate_limit()
+                max_results = min(max_results, 100)
+                
+                issues = jira_client.search_issues(
+                    custom_jql,
+                    maxResults=max_results,
+                    expand='changelog,comments',
+                    fields=f'summary,status,assignee,reporter,priority,issuetype,project,created,updated,components,versions,comment,{TELCO_PRIORITY_FIELD_ID}'
+                )
+                
+                logger.info(f"Team custom JQL returned {len(issues)} issues")
+                
+                if not issues:
+                    return f"✅ No issues found for {team_config.team_name} matching the criteria."
+                
+                # Process for staleness
+                threshold_date = datetime.now() - timedelta(days=days_threshold)
+                stale_issues = []
+                
+                result = f"🔍 **{team_config.team_name} - Stale Issues Search**\n"
+                result += f"📊 Found {len(issues)} issues (limited to {max_results} for performance)\n"
+                result += f"⏰ Staleness threshold: {days_threshold} days\n"
+                result += f"📋 Team: {team_config.team_name}\n"
+                result += f"🎯 Using custom team JQL configuration\n\n"
+                
+                # Analyze each issue for staleness
+                for idx, issue in enumerate(issues):
+                    try:
+                        comments = getattr(issue.fields, 'comment', None)
+                        if comments and hasattr(comments, 'comments'):
+                            comments = comments.comments
+                        else:
+                            comments = []
+                        
+                        if (idx + 1) % 5 == 0:
+                            logger.info(f"Analyzed {idx + 1}/{len(issues)} issues for {team_config.team_name}")
+                        
+                        is_stale = False
+                        latest_comment_date = None
+                        
+                        if not comments:
+                            if include_no_comments:
+                                is_stale = True
+                                latest_comment_date = "No comments"
+                        else:
+                            latest_comment = comments[-1]
+                            comment_date_str = latest_comment.created
+                            if 'T' in comment_date_str:
+                                comment_date_str = comment_date_str.split('T')[0] + 'T' + comment_date_str.split('T')[1][:19]
+                            
+                            try:
+                                latest_comment_date = datetime.fromisoformat(comment_date_str.replace('Z', '+00:00'))
+                                if latest_comment_date.tzinfo:
+                                    latest_comment_date = latest_comment_date.replace(tzinfo=None)
+                                
+                                if latest_comment_date < threshold_date:
+                                    is_stale = True
+                            except ValueError:
+                                is_stale = True
+                                latest_comment_date = comment_date_str
+                        
+                        if is_stale:
+                            issue_data = {
+                                'issue': issue,
+                                'latest_comment_date': latest_comment_date,
+                                'comments_count': len(comments)
+                            }
+                            
+                            if include_comment_analysis:
+                                issue_data['comment_analysis'] = analyze_comments(comments, threshold_date)
+                            
+                            stale_issues.append(issue_data)
+                            
+                    except Exception as e:
+                        logger.warning(f"Error processing issue {issue.key}: {str(e)}")
+                        continue
+                
+                logger.info(f"Found {len(stale_issues)} stale out of {len(issues)} total issues for {team_config.team_name}")
+                
+                if not stale_issues:
+                    return f"{result}✅ **RESULT: 0 stale issues found!**\n📊 Analyzed {len(issues)} total issues - all have recent activity within {days_threshold} days."
+                
+                # Format results
+                result += f"🚨 **RESULT: {len(stale_issues)} STALE ISSUES FOUND**\n"
+                result += f"📊 Analysis Summary: Found {len(stale_issues)} stale out of {len(issues)} total issues analyzed\n\n"
+                
+                for item in stale_issues:
+                    issue = item['issue']
+                    latest_date = item['latest_comment_date']
+                    comments_count = item['comments_count']
+                    
+                    components = getattr(issue.fields, 'components', [])
+                    component_names = [comp.name for comp in components] if components else ['No component']
+                    
+                    affected_versions = getattr(issue.fields, 'versions', [])
+                    version_names = [ver.name for ver in affected_versions] if affected_versions else ['No version']
+                    
+                    telco_priority = "None"
+                    try:
+                        custom_field_value = getattr(issue.fields, TELCO_PRIORITY_FIELD_ID, None)
+                        if custom_field_value:
+                            if isinstance(custom_field_value, list):
+                                telco_priority = ', '.join([str(val) for val in custom_field_value])
+                            else:
+                                telco_priority = str(custom_field_value)
+                    except Exception:
+                        telco_priority = "Unable to retrieve"
+                    
+                    result += f"🐛 **{issue.key}**: {issue.fields.summary}\n"
+                    result += f"   📋 Status: {issue.fields.status.name}\n"
+                    result += f"   👤 Assignee: {getattr(issue.fields.assignee, 'displayName', 'Unassigned')}\n"
+                    result += f"   🏷️  Priority: {getattr(issue.fields.priority, 'name', 'None')}\n"
+                    result += f"   🎯 Telco Priority: {telco_priority}\n"
+                    result += f"   🔧 Components: {', '.join(component_names[:3])}{'...' if len(component_names) > 3 else ''}\n"
+                    result += f"   📦 Affects Versions: {', '.join(version_names[:3])}{'...' if len(version_names) > 3 else ''}\n"
+                    
+                    if include_comment_analysis and 'comment_analysis' in item:
+                        analysis = item['comment_analysis']
+                        result += f"   💬 Comments: {comments_count} ({analysis['unique_authors']} authors, {analysis['activity_pattern'].lower()})\n"
+                        
+                        if latest_date == "No comments":
+                            result += f"   🕒 Last Activity: No comments (Created: {issue.fields.created[:10]})\n"
+                        else:
+                            if isinstance(latest_date, datetime):
+                                days_old = (datetime.now() - latest_date).days
+                                result += f"   🕒 Last Comment: {latest_date.strftime('%Y-%m-%d')} ({days_old} days ago)\n"
+                            else:
+                                result += f"   🕒 Last Comment: {latest_date}\n"
+                        
+                        insights = []
+                        if analysis['keywords_found']:
+                            insights.append(f"Keywords: {', '.join(analysis['keywords_found'][:3])}")
+                        if analysis['escalation_indicators']:
+                            insights.append(f"🚨 ESCALATION DETECTED")
+                        
+                        if insights:
+                            result += f"   🔍 AI Insights: {' | '.join(insights)}\n"
+                    else:
+                        result += f"   💬 Comments: {comments_count}\n"
+                        if latest_date == "No comments":
+                            result += f"   🕒 Last Activity: No comments\n"
+                        elif isinstance(latest_date, datetime):
+                            days_old = (datetime.now() - latest_date).days
+                            result += f"   🕒 Last Comment: {latest_date.strftime('%Y-%m-%d')} ({days_old} days ago)\n"
+                    
+                    result += f"   🔗 URL: {os.getenv('JIRA_URL')}/browse/{issue.key}\n\n"
+                
+                result += f"\n📝 **Custom Team JQL:**\n```\n{custom_jql}\n```\n"
+                result += f"\n🎯 **Team:** {team_config.team_name}\n"
+                result += f"📊 **Summary:** {len(stale_issues)} stale out of {len(issues)} analyzed\n"
+                
+                return result
+                
+            else:
+                # Fallback to component-based search using team defaults
+                return await _find_stale_issues_core(
+                    days_threshold=days_threshold,
+                    include_no_comments=include_no_comments,
+                    affects_versions=affects_versions,
+                    max_results=max_results,
+                    override_components=team_config.default_components,
+                    override_projects=team_config.default_projects,
+                    strict_bugs_only=strict_bugs_only,
+                    include_comment_analysis=include_comment_analysis
+                )
+                
+        except ValueError as e:
+            # Team not found
+            available = ', '.join(TEAM_REGISTRY.keys())
+            return f"❌ Error: {str(e)}\n\n💡 Use `jira_list_teams` to see available teams.\n📋 Available team IDs: {available}"
+        except JIRAError as e:
+            return f"❌ JIRA Error: {str(e)}"
+        except Exception as e:
+            import traceback
+            return f"❌ Error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+    
+    # MANUAL SEARCH (original behavior)
+    else:
+        return await _find_stale_issues_core(
+            days_threshold=days_threshold,
+            include_no_comments=include_no_comments,
+            affects_versions=affects_versions,
+            max_results=max_results,
+            additional_components=additional_components,
+            override_components=override_components,
+            additional_projects=additional_projects,
+            override_projects=override_projects,
+            strict_bugs_only=strict_bugs_only,
+            include_comment_analysis=include_comment_analysis
+        )
+
+
+@app.tool()
+async def jira_list_teams() -> str:
+    """
+    List all available teams and their configurations.
+    
+    Returns:
+        Formatted list of teams with their details
+    """
+    teams = list_available_teams()
+    
+    result = "📋 **Available Teams**\n\n"
+    
+    for team in teams:
+        result += f"🏢 **{team['team_name']}** (ID: `{team['team_id']}`)\n"
+        result += f"   📝 Description: {team['description']}\n"
+        result += f"   📦 Projects: {team['default_projects']}\n"
+        result += f"   🔧 Components: {team['default_components'][:100]}{'...' if len(team['default_components']) > 100 else ''}\n\n"
+    
+    result += "\n💡 **Usage:** Use the team_id parameter in `jira_find_stale_issues` to search for stale issues specific to that team.\n"
+    
+    return result
 
 
 @app.tool()
@@ -1220,6 +1644,7 @@ async def jira_generate_stale_issues_report(
     days_threshold: int = 5,
     include_no_comments: bool = True,
     affects_versions: List[str] = [],
+    team_id: Optional[str] = None,
     additional_projects: List[str] = [],
     override_projects: List[str] = [],
     strict_bugs_only: bool = True,
@@ -1239,6 +1664,7 @@ async def jira_generate_stale_issues_report(
         days_threshold: Number of days to consider an issue stale (default: 5)
         include_no_comments: Include issues with zero comments (default: True)
         affects_versions: List of specific versions to filter by (e.g., ["4.14", "4.16"])
+        team_id: Optional team identifier (e.g., "networking", "deployment", "ptp") - uses team config if provided
         additional_projects: Additional projects to search beyond defaults
         override_projects: Override default projects with these specific projects
         strict_bugs_only: Only include Bug type issues (default: True)
@@ -1252,17 +1678,18 @@ async def jira_generate_stale_issues_report(
         Status message with report location and summary
     """
     try:
-        # First, get the stale issues data using the core helper function
-        stale_data = await _find_stale_issues_core(
+        # First, get the stale issues data using the unified function (supports teams)
+        stale_data = await jira_find_stale_issues.fn(
             days_threshold=days_threshold,
             include_no_comments=include_no_comments,
             affects_versions=affects_versions,
+            max_results=max_results,
+            team_id=team_id,
+            additional_components=additional_components,
+            override_components=override_components,
             additional_projects=additional_projects,
             override_projects=override_projects,
             strict_bugs_only=strict_bugs_only,
-            additional_components=additional_components,
-            override_components=override_components,
-            max_results=max_results,
             include_comment_analysis=include_comment_analysis
         )
         
@@ -1272,7 +1699,6 @@ async def jira_generate_stale_issues_report(
         # Extract parsed metrics
         total_stale = parsed_data['total_stale']
         total_analyzed = parsed_data['total_analyzed']
-        stale_rate = parsed_data['stale_rate']
         non_stale_count = parsed_data['non_stale_count']
         issues_by_priority = parsed_data['issues_by_priority']
         
@@ -1293,13 +1719,16 @@ async def jira_generate_stale_issues_report(
             # Default components
             report_title = "Deployment and Lifecycle Stale Issues Analysis"
         
+        # Calculate stale rate
+        stale_rate = round((total_stale / total_analyzed * 100), 1) if total_analyzed > 0 else 0
+        
         # Prepare template variables
         template_vars = {
             'report_title': report_title,
             'total_stale': total_stale,
             'total_analyzed': total_analyzed,
-            'stale_rate': stale_rate,
             'non_stale_count': non_stale_count,
+            'stale_rate': stale_rate,
             'days_threshold': days_threshold,
             'issue_type_text': 'bug-type issues only' if strict_bugs_only else 'all issue types',
             'version_scope_text': ', '.join(affects_versions) if affects_versions else 'all releases',
@@ -1347,7 +1776,6 @@ async def jira_generate_stale_issues_report(
    • File: {report_path}
    • Total Issues Analyzed: {total_analyzed}
    • Stale Issues Found: {total_stale}
-   • Stale Rate: {stale_rate}%
    • Staleness Threshold: {days_threshold}+ days
 
 📊 **Report Features:**
@@ -1355,7 +1783,6 @@ async def jira_generate_stale_issues_report(
    • Interactive charts and visualizations
    • Complete detailed analysis data
    • Professional formatting for stakeholders
-   • Mobile-responsive design
 
 🔗 **Access:** Open {report_path} in your web browser to view the interactive report.
 
@@ -1363,6 +1790,199 @@ async def jira_generate_stale_issues_report(
         
     except Exception as e:
         return f"❌ Error generating HTML report: {str(e)}"
+
+
+# =============================================================================
+# DETAILED ISSUE REPORT GENERATION
+# =============================================================================
+# Note: Helper functions have been moved to the helpers/ module for better
+# code organization and maintainability.
+
+
+@app.tool()
+def jira_generate_detailed_issue_report(
+    issue_data: str,
+    template_choice: str = "template_3",
+    output_filename: Optional[str] = None
+) -> str:
+    """
+    Generate a detailed HTML report for a JIRA issue with AI-analyzed narrative sections.
+
+    This tool creates a comprehensive, executive-ready HTML report from JIRA issue data.
+    The report includes dynamic sections based on available data: executive summary,
+    problem statement, root cause analysis, activity timeline, proposed solutions,
+    blockers, and impact assessment.
+
+    Args:
+        issue_data: JSON string or text output from jira_get_issue or jira_analyze_issue_comments
+        template_choice: "template_3" (enhanced rich report - default)
+        output_filename: Optional custom filename (default: {issue_key}-detailed-report.html)
+
+    Returns:
+        Success message with path to generated HTML report
+
+    Example:
+        First get issue data:
+        >>> issue_info = jira_get_issue("OCPBUGS-12345")
+
+        Then generate report:
+        >>> jira_generate_detailed_issue_report(issue_info, "template_3")
+    """
+    try:
+        # Parse the issue data
+        parsed_data = parse_issue_data(issue_data)
+        issue_key = parsed_data.get('issue_key', 'UNKNOWN')
+        
+        if not issue_key or issue_key == 'UNKNOWN':
+            # Provide helpful error with sample of data received
+            sample = issue_data[:200] if len(issue_data) > 200 else issue_data
+            return f"""❌ Error: Could not extract issue key from provided data
+
+**Debugging Info:**
+- Data length: {len(issue_data)} characters
+- First 200 characters: {sample}
+
+**Possible causes:**
+1. The data might not be from jira_get_issue
+2. The issue key might not be in the expected format
+3. Try calling jira_get_issue first, then pass that output to this function
+
+**Correct usage:**
+```
+Step 1: Get issue data
+issue_data = jira_get_issue("OCPBUGS-12345")
+
+Step 2: Generate report
+jira_generate_detailed_issue_report(issue_data, "template_1")
+```"""
+        
+        # Determine output filename
+        if not output_filename:
+            output_filename = f"{issue_key}-detailed-report.html"
+        
+        # Select template
+        template_file = f"templates/detailed_issue_report_{template_choice}.html"
+        if not os.path.exists(template_file):
+            return f"❌ Error: Template file {template_file} not found"
+        
+        # Read template
+        with open(template_file, 'r', encoding='utf-8') as f:
+            template = f.read()
+        
+        # Generate dynamic sections
+        executive_summary = generate_executive_summary(parsed_data)
+        problem_section = generate_problem_section(parsed_data)
+        reproduction_steps_section = generate_reproduction_steps_section(parsed_data)
+        root_cause_section = generate_root_cause_section(parsed_data)
+        timeline_section = generate_timeline(parsed_data)
+        solutions_section = analyze_solutions_from_comments(parsed_data)
+        blockers_section = identify_blockers(parsed_data)
+        impact_section = generate_impact_assessment(parsed_data)
+        analysis_summary_section = generate_analysis_summary_section(parsed_data)
+        related_issues_section = generate_related_issues(parsed_data)
+        
+        # Determine header gradient based on issue type
+        issue_type = parsed_data.get('issue_type', '').lower()
+        if 'bug' in issue_type:
+            header_gradient = "linear-gradient(135deg, #dc3545 0%, #c82333 100%)"
+        elif 'story' in issue_type:
+            header_gradient = "linear-gradient(135deg, #28a745 0%, #1e7e34 100%)"
+        else:
+            header_gradient = "linear-gradient(135deg, #007bff 0%, #0056b3 100%)"
+        
+        # Get current date for generation timestamp
+        from datetime import datetime
+        generated_date = datetime.now().strftime('%B %d, %Y')
+        
+        # Build JIRA URL
+        jira_url = f"{os.getenv('JIRA_URL', 'https://issues.redhat.com')}/browse/{issue_key}"
+        
+        # Format dates
+        created = parsed_data.get('created', '')
+        updated = parsed_data.get('updated', '')
+        
+        try:
+            if 'T' in created:
+                dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                created = dt.strftime('%b %d, %Y')
+        except:
+            pass
+            
+        try:
+            if 'T' in updated:
+                dt = datetime.fromisoformat(updated.replace('Z', '+00:00'))
+                updated = dt.strftime('%b %d, %Y')
+        except:
+            pass
+        
+        # Populate template using replace method to avoid CSS curly brace conflicts
+        template_vars = {
+            'issue_key': issue_key,
+            'title': parsed_data.get('title', 'No title'),
+            'status': parsed_data.get('status', 'Unknown'),
+            'priority': parsed_data.get('priority', 'Unknown'),
+            'assignee': parsed_data.get('assignee', 'Unassigned'),
+            'reporter': parsed_data.get('reporter', 'Unknown'),
+            'created': created,
+            'updated': updated,
+            'issue_type': parsed_data.get('issue_type', 'Unknown'),
+            'component': parsed_data.get('component', 'Unknown'),
+            'affected_versions': parsed_data.get('affected_versions', 'None'),
+            'header_gradient': header_gradient,
+            'executive_summary': executive_summary,
+            'problem_section': problem_section,
+            'reproduction_steps_section': reproduction_steps_section,
+            'root_cause_section': root_cause_section,
+            'timeline_section': timeline_section,
+            'solutions_section': solutions_section,
+            'blockers_section': blockers_section,
+            'impact_section': impact_section,
+            'analysis_summary_section': analysis_summary_section,
+            'related_issues_section': related_issues_section,
+            'jira_url': jira_url,
+            'generated_date': generated_date
+        }
+
+        # Use string replacement instead of format() to avoid CSS curly brace conflicts
+        populated_template = template
+        for key, value in template_vars.items():
+            placeholder = '{' + key + '}'
+            populated_template = populated_template.replace(placeholder, str(value))
+        
+        # Ensure report directory exists
+        report_dir = "report"
+        os.makedirs(report_dir, exist_ok=True)
+        
+        # Write report file
+        report_path = os.path.join(report_dir, output_filename)
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write(populated_template)
+        
+        return f"""✅ **Detailed Issue Report Generated Successfully!**
+
+📄 **Report Details:**
+   • Issue: {issue_key}
+   • Title: {parsed_data.get('title', 'N/A')}
+   • Template: {template_choice}
+   • Output: {report_path}
+
+📊 **Report Includes:**
+   • Executive summary with current status
+   • Problem statement and description
+   • Activity timeline with {len(parsed_data.get('comments', []))} comment(s)
+   • Proposed solutions and workarounds
+   • Impact assessment
+   • Related issues (blocks, blocked by, duplicates, relates)
+   • Direct link to JIRA issue
+
+🔗 **Access:** Open {report_path} in your web browser to view the detailed report.
+
+💡 **Note:** This report is AI-generated based on available JIRA data and can be shared with stakeholders for comprehensive issue analysis."""
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        return f"❌ Error generating detailed report: {str(e)}\n\nDetails:\n{error_details}"
 
 
 async def main():
