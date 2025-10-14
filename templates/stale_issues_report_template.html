@@ -100,6 +100,12 @@
             padding: 25px;
             border-radius: 10px;
             box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            min-height: 400px;
+            position: relative;
+        }
+
+        .chart-card canvas {
+            max-height: 350px;
         }
 
         .chart-title {
@@ -116,15 +122,20 @@
 
         .section h2 {
             color: #2c3e50;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
             border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+            font-size: 1.8em;
         }
 
         .section h3 {
-            color: #34495e;
-            margin: 25px 0 15px 0;
-            font-size: 1.3em;
+            color: #2a5298;
+            margin-top: 25px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+            background: #f8f9fa;
+            padding: 10px 15px;
+            border-radius: 5px;
         }
 
         .priority-badge {
@@ -152,24 +163,47 @@
             width: 100%;
             border-collapse: collapse;
             margin-bottom: 30px;
-            background: white;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            font-size: 0.9em;
+        }
+
+        thead {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
         }
 
         th {
-            background: #34495e;
-            color: white;
-            padding: 15px 12px;
+            padding: 12px 8px;
             text-align: left;
             font-weight: 600;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
         td {
-            padding: 12px;
-            border-bottom: 1px solid #ecf0f1;
+            padding: 10px 8px;
+            border-bottom: 1px solid #e9ecef;
             vertical-align: top;
+        }
+
+        tbody tr:hover {
+            background-color: #f8f9fa;
+            transition: background-color 0.2s;
+        }
+
+        tbody tr:nth-child(even) {
+            background-color: #fafbfc;
+        }
+
+        .issue-link {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .issue-link:hover {
+            text-decoration: underline;
         }
 
         tr:hover {
@@ -288,12 +322,10 @@
             <div class="exec-summary">
                 <h1 class="exec-title">Executive Summary</h1>
                 
+                {executive_summary_content}
+                
                 <p style="font-size: 1.1em; margin-bottom: 2rem; text-align: center; color: #2c3e50;">
                     <strong>Current State:</strong> Analysis reveals <strong>{total_stale} out of {total_analyzed} issues ({stale_rate}%)</strong> in a stale state across {version_scope_text} releases, requiring immediate attention to maintain development velocity and customer satisfaction.
-                </p>
-
-                <p style="font-size: 1.1em; margin-bottom: 2rem; text-align: center; color: #2c3e50;">
-                    <strong>Business Impact:</strong> Stale issues represent blocked development work and potential customer-facing problems. With a {days_threshold}-day staleness threshold, these issues indicate process gaps requiring management intervention.
                 </p>
             </div>
 
@@ -303,13 +335,19 @@
                     <canvas id="statusChart"></canvas>
                 </div>
                 <div class="chart-card">
-                    <h3 class="chart-title">Staleness Analysis</h3>
-                    <canvas id="stalenessChart"></canvas>
+                    <h3 class="chart-title">Age Distribution Analysis</h3>
+                    <canvas id="ageChart"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Release Impact Overview</h3>
+                    <canvas id="releaseChart"></canvas>
                 </div>
             </div>
 
             <div class="key-findings">
                 <h3>Key Findings & Analysis</h3>
+                {key_findings_content}
+                <h4 style="margin-top: 25px; color: #2a5298;">Analysis Parameters</h4>
                 <ul>
                     <li><strong>Stale Rate:</strong> {stale_rate}% of analyzed issues are stale (threshold: {days_threshold}+ days)</li>
                     <li><strong>Scope:</strong> Analysis covers {issue_type_text} across {version_scope_text}</li>
@@ -330,7 +368,6 @@
                     <li><strong>Projects:</strong> {projects_text}</li>
                     <li><strong>Issue Types:</strong> {issue_types_text}</li>
                     <li><strong>Components:</strong> {components_text}</li>
-                    <li><strong>Max Results:</strong> {max_results}</li>
                     <li><strong>Comment Analysis:</strong> {comment_analysis_text}</li>
                 </ul>
             </div>
@@ -366,21 +403,22 @@
 
         // Initialize charts when page loads
         document.addEventListener('DOMContentLoaded', function() {
-            // Status Chart
+            // Status Chart - showing actual JIRA issue statuses
             const statusCtx = document.getElementById('statusChart').getContext('2d');
             new Chart(statusCtx, {
                 type: 'doughnut',
                 data: {
-                    labels: ['Stale Issues', 'Active Issues'],
+                    labels: {status_labels},
                     datasets: [{
-                        data: [{total_stale}, {non_stale_count}],
-                        backgroundColor: ['#e74c3c', '#27ae60'],
-                        borderWidth: 2,
-                        borderColor: '#fff'
+                        data: {status_data},
+                        backgroundColor: ['#ffc107', '#3498db', '#27ae60', '#17a2b8', '#fd7e14', '#6c757d'],
+                        borderWidth: 3,
+                        borderColor: '#ffffff'
                     }]
                 },
                 options: {
                     responsive: true,
+                    maintainAspectRatio: false,
                     plugins: {
                         legend: {
                             position: 'bottom'
@@ -389,17 +427,17 @@
                 }
             });
 
-            // Staleness Chart
-            const stalenessCtx = document.getElementById('stalenessChart').getContext('2d');
-            new Chart(stalenessCtx, {
+            // Age Distribution Chart
+            const ageCtx = document.getElementById('ageChart').getContext('2d');
+            new Chart(ageCtx, {
                 type: 'bar',
                 data: {
-                    labels: ['Total Analyzed', 'Stale Issues', 'Threshold (days)'],
+                    labels: ['0-30 days', '31-60 days', '61-90 days', '91-180 days', '180+ days'],
                     datasets: [{
-                        label: 'Count',
-                        data: [{total_analyzed}, {total_stale}, {days_threshold}],
-                        backgroundColor: ['#3498db', '#e74c3c', '#f39c12'],
-                        borderWidth: 1
+                        label: 'Issues',
+                        data: {age_distribution_data},
+                        backgroundColor: ['#27ae60', '#f39c12', '#e67e22', '#e74c3c', '#8b0000'],
+                        borderRadius: 5
                     }]
                 },
                 options: {
@@ -411,7 +449,41 @@
                     },
                     scales: {
                         y: {
-                            beginAtZero: true
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Release Impact Chart
+            const releaseCtx = document.getElementById('releaseChart').getContext('2d');
+            new Chart(releaseCtx, {
+                type: 'bar',
+                data: {
+                    labels: {release_labels},
+                    datasets: [{
+                        label: 'Stale Issues',
+                        data: {release_data},
+                        backgroundColor: '#667eea',
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1
+                            }
                         }
                     }
                 }

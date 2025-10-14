@@ -75,15 +75,19 @@ class TeamConfig:
         self.custom_jql_base = custom_jql_base
         self.use_custom_jql = custom_jql_base is not None
     
-    def get_full_jql(self, components: Optional[List[str]] = None, 
-                     projects: Optional[List[str]] = None) -> str:
+    def get_full_jql(self, components: Optional[List[str]] = None,
+                     projects: Optional[List[str]] = None,
+                     priority: bool = True) -> str:
         """
         Generate complete JQL query for this team.
-        
+
         Args:
             components: Optional list to override default components
             projects: Optional list to override default projects
-            
+            priority: Include telco priority filtering (default: True)
+                     - True: include telco priority filter
+                     - False: no telco priority filter (non-telco bugs)
+
         Returns:
             Complete JQL query string with placeholders replaced, or None for default query building
         """
@@ -105,10 +109,53 @@ class TeamConfig:
                 proj_list = ', '.join(self.default_projects)
             jql = jql.replace('{projects}', proj_list)
             
+            # Replace priority_clause placeholder
+            if '{priority_clause}' in jql:
+                if not priority:
+                    # User wants non-telco bugs - remove priority clause entirely
+                    jql = jql.replace('AND {priority_clause}', '')
+                    jql = jql.replace('{priority_clause} AND', '')
+                    jql = jql.replace('{priority_clause}', '')
+                else:
+                    # User wants telco priority filtering
+                    priority_clause = self.get_jql_priority_clause()
+                    if not priority_clause:
+                        # Team has no priority values configured - remove the clause
+                        jql = jql.replace('AND {priority_clause}', '')
+                        jql = jql.replace('{priority_clause} AND', '')
+                        jql = jql.replace('{priority_clause}', '')
+                    else:
+                        jql = jql.replace('{priority_clause}', priority_clause)
+            
             return jql
         
         # Return None for teams without custom JQL (fallback to default query building)
         return None
+    
+    def get_jql_priority_clause(self) -> str:
+        """
+        Generate JQL clause for priority filtering.
+        
+        Returns:
+            JQL clause string for priority filtering, or empty string if no priority filtering needed
+        """
+        if not self.priority_values:
+            return ""
+        
+        priority_list = ', '.join([f'"{p}"' for p in self.priority_values])
+        return f'{self.priority_field_id} in ({priority_list})'
+    
+    def get_report_title(self, components: Optional[List[str]] = None) -> str:
+        """
+        Generate report title based on team name.
+        
+        Args:
+            components: Optional list of components (not used, for compatibility)
+        
+        Returns:
+            Report title string
+        """
+        return self.report_title_template.format(team=self.team_name)
 
 
 # =============================================================================
@@ -185,7 +232,7 @@ NETWORKING_TEAM = TeamConfig(
     priority_values=TELCO_PRIORITY_VALUES,
     report_title_template=DEFAULT_REPORT_TITLE_TEMPLATE,
     description="Networking team components",
-    custom_jql_base=f"""{BUG_TYPES_JQL} AND {TELCO_PRIORITY_JQL} AND Component in ({{components}}) AND {EXCLUDED_STATUSES_JQL}"""
+    custom_jql_base=f"""{BUG_TYPES_JQL} AND {{priority_clause}} AND Component in ({{components}}) AND {EXCLUDED_STATUSES_JQL}"""
 )
 
 
