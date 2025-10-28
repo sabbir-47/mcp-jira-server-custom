@@ -28,6 +28,11 @@ TELCO_PRIORITY_VALUES = [
     "Telco:Priority-3"
 ]
 
+# JQL-formatted strings for reuse in custom queries
+BUG_TYPES_JQL = "Type in (Bug, Weakness, Vulnerability)"
+TELCO_PRIORITY_JQL = 'cf[12323649] in (Telco:Priority-1, Telco:Priority-2, Telco:Priority-3)'
+EXCLUDED_STATUSES_JQL = 'status not in (Closed, Verified, "Release Pending", Done)'
+
 
 class TeamConfig:
     """Configuration for a specific team's JIRA monitoring."""
@@ -70,8 +75,70 @@ class TeamConfig:
         self.custom_jql_base = custom_jql_base
         self.use_custom_jql = custom_jql_base is not None
     
+    def get_full_jql(self, components: Optional[List[str]] = None,
+                     projects: Optional[List[str]] = None,
+                     priority: bool = True) -> str:
+        """
+        Generate complete JQL query for this team.
+
+        Args:
+            components: Optional list to override default components
+            projects: Optional list to override default projects
+            priority: Include telco priority filtering (default: True)
+                     - True: include telco priority filter
+                     - False: no telco priority filter (non-telco bugs)
+
+        Returns:
+            Complete JQL query string with placeholders replaced, or None for default query building
+        """
+        if self.use_custom_jql and self.custom_jql_base:
+            # Use custom JQL with placeholders
+            jql = self.custom_jql_base
+            
+            # Replace component placeholder
+            if components:
+                comp_list = ', '.join([f'"{c}"' for c in components])
+            else:
+                comp_list = ', '.join([f'"{c}"' for c in self.default_components])
+            jql = jql.replace('{components}', comp_list)
+            
+            # Replace project placeholder
+            if projects:
+                proj_list = ', '.join(projects)
+            else:
+                proj_list = ', '.join(self.default_projects)
+            jql = jql.replace('{projects}', proj_list)
+            
+            # Replace priority_clause placeholder
+            if '{priority_clause}' in jql:
+                if not priority:
+                    # User wants non-telco bugs - remove priority clause entirely
+                    jql = jql.replace('AND {priority_clause}', '')
+                    jql = jql.replace('{priority_clause} AND', '')
+                    jql = jql.replace('{priority_clause}', '')
+                else:
+                    # User wants telco priority filtering
+                    priority_clause = self.get_jql_priority_clause()
+                    if not priority_clause:
+                        # Team has no priority values configured - remove the clause
+                        jql = jql.replace('AND {priority_clause}', '')
+                        jql = jql.replace('{priority_clause} AND', '')
+                        jql = jql.replace('{priority_clause}', '')
+                    else:
+                        jql = jql.replace('{priority_clause}', priority_clause)
+            
+            return jql
+        
+        # Return None for teams without custom JQL (fallback to default query building)
+        return None
+    
     def get_jql_priority_clause(self) -> str:
-        """Generate JQL clause for priority filtering."""
+        """
+        Generate JQL clause for priority filtering.
+        
+        Returns:
+            JQL clause string for priority filtering, or empty string if no priority filtering needed
+        """
         if not self.priority_values:
             return ""
         
@@ -79,21 +146,16 @@ class TeamConfig:
         return f'{self.priority_field_id} in ({priority_list})'
     
     def get_report_title(self, components: Optional[List[str]] = None) -> str:
-        """Generate report title based on team name only."""
+        """
+        Generate report title based on team name.
+        
+        Args:
+            components: Optional list of components (not used, for compatibility)
+        
+        Returns:
+            Report title string
+        """
         return self.report_title_template.format(team=self.team_name)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert config to dictionary for serialization."""
-        return {
-            'team_name': self.team_name,
-            'team_id': self.team_id,
-            'default_projects': self.default_projects,
-            'default_components': self.default_components,
-            'priority_field_id': self.priority_field_id,
-            'priority_values': self.priority_values,
-            'report_title_template': self.report_title_template,
-            'description': self.description
-        }
 
 
 # =============================================================================
@@ -116,11 +178,11 @@ DEPLOYMENT_TEAM = TeamConfig(
         "Installer / Assisted Installer",
         "oc / cluster-compare"
     ],
-
     priority_field_id=TELCO_PRIORITY_FIELD_ID, 
     priority_values=TELCO_PRIORITY_VALUES,
     report_title_template=DEFAULT_REPORT_TITLE_TEMPLATE,
-    description="Deployment and lifecycle management components"
+    description="Deployment and lifecycle management components",
+    custom_jql_base=f"""{BUG_TYPES_JQL} AND {TELCO_PRIORITY_JQL} AND Component in ({{components}}) AND {EXCLUDED_STATUSES_JQL}"""
 )
 
 # PTP Team (Precision Time Protocol)
@@ -139,20 +201,38 @@ PTP_TEAM = TeamConfig(
     priority_values=[],  # No priority filtering for PTP team
     report_title_template=DEFAULT_REPORT_TITLE_TEMPLATE,
     description="Precision Time Protocol components",
-    custom_jql_base="""((project in ({projects}) AND summary ~ "Telco PTP Release" AND issuetype = Story AND labels = telco-backport AND status != Closed) OR (Type in (Bug, Weakness, Vulnerability) AND Component in ({components}) AND resolution = Unresolved AND Status not in ("Verified", "Done")))"""
+    custom_jql_base=f"""((project in ({{projects}}) AND summary ~ "Telco PTP Release" AND issuetype = Story AND labels = telco-backport AND status != Closed) OR ({BUG_TYPES_JQL} AND Component in ({{components}}) AND {EXCLUDED_STATUSES_JQL}))"""
 )
 
-# Networking Team (Placeholder - to be configured later)
+# Networking Team (Kernel Networking, OVN, SR-IOV, multus, nmstate, etc.)
 NETWORKING_TEAM = TeamConfig(
     team_name="Networking Team",
     team_id="networking",
-    default_projects=[],  # To be configured
-    default_components=[],  # To be configured
-    priority_field_id=TELCO_PRIORITY_FIELD_ID,  # Using common Telco field
-    priority_values=TELCO_PRIORITY_VALUES,  # Using common Telco priorities
+    default_projects=["OCPBUGS"],
+    default_components=[
+        "kernel / Networking",
+        "Networking / On-Prem Host Networking",
+        "Networking / multus",
+        "Networking / ovn-kubernetes",
+        "Networking / SR-IOV",
+        "nmstate",
+        "dpdk",
+        "Networking / runtime-cfg",
+        "Networking / Metal LB",
+        "Networking / kubernetes-nmstate-operator",
+        "Networking / kubernetes-nmstate",
+        "Networking / FRR-K8s",
+        "Networking / cloud-network-config-controller",
+        "NetworkManager",
+        "Networking",
+        "Networking / DNS",
+        "CNV Network"
+    ],
+    priority_field_id=TELCO_PRIORITY_FIELD_ID,
+    priority_values=TELCO_PRIORITY_VALUES,
     report_title_template=DEFAULT_REPORT_TITLE_TEMPLATE,
-    description="Networking infrastructure components (configuration pending)",
-    custom_jql_base=None  # To be configured with custom JQL if needed
+    description="Networking team components",
+    custom_jql_base=f"""{BUG_TYPES_JQL} AND {{priority_clause}} AND Component in ({{components}}) AND {EXCLUDED_STATUSES_JQL}"""
 )
 
 
@@ -208,9 +288,4 @@ def list_available_teams() -> List[Dict[str, str]]:
         }
         for config in TEAM_REGISTRY.values()
     ]
-
-
-def get_default_team() -> TeamConfig:
-    """Get the default team configuration (Deployment Team)."""
-    return DEPLOYMENT_TEAM
 

@@ -66,7 +66,7 @@ BURST_RESET_TIME = 60  # Seconds before burst counter resets
 MAX_SLEEP_TIME = 8.0  # Maximum sleep time for rate limiting (prevents timeouts)
 
 # Query defaults
-DEFAULT_DAYS_THRESHOLD = 5  # Default staleness threshold in days
+DEFAULT_DAYS_THRESHOLD = 0  # Default staleness threshold in days (0 = show all issues)
 DEFAULT_MAX_RESULTS = 100  # Default maximum results to fetch
 MAX_RESULTS_CAP = 100  # Hard cap on maximum results per query
 
@@ -327,7 +327,7 @@ async def jira_analyze_issue_comments(issue_key: str, days_threshold: int = DEFA
     
     Args:
         issue_key: The JIRA issue key (e.g., 'OCPBUGS-12345')
-        days_threshold: Number of days to consider for staleness analysis (default: 5)
+        days_threshold: Number of days to consider for staleness analysis (default: 0)
     
     Returns:
         Detailed comment analysis with keywords, patterns, and insights
@@ -1012,12 +1012,13 @@ async def _find_stale_issues_core(
     override_projects: List[str] = [],
     strict_bugs_only: bool = True,
     include_comment_analysis: bool = True,
-    team_id: Optional[str] = None
+    team_id: Optional[str] = None,
+    priority: bool = True
 ):
-    """Find stale Telco priority bugs with no recent comments.
-    
+    """Find stale bugs with no recent comments.
+
     Args:
-        days_threshold: Days threshold for staleness (default: 14)
+        days_threshold: Days threshold for staleness (default: 0)
         include_no_comments: Include issues with no comments (default: True)
         affects_versions: Filter by specific versions (default: [])
         max_results: Maximum number of results (default: 50)
@@ -1027,6 +1028,8 @@ async def _find_stale_issues_core(
         override_projects: If specified, search ONLY these projects (ignores defaults) (default: [])
         strict_bugs_only: Only include bug-type issues, exclude stories/epics/tasks (default: True)
         include_comment_analysis: Include detailed comment analysis for AI processing (default: True)
+        team_id: Optional team identifier (default: None)
+        priority: Include telco priority filtering (default: True). Set to False for non-telco bugs
     """
     if not jira_client:
         await init_jira_client()
@@ -1057,15 +1060,38 @@ async def _find_stale_issues_core(
             # Populate custom JQL template with team config values
             projects_str = ', '.join([f'"{p}"' for p in team_config.default_projects])
             components_str = ', '.join([f'"{c}"' for c in team_config.default_components])
-            priority_clause = team_config.get_jql_priority_clause()
             
             # Handle custom JQL with or without priority clause placeholder
             if '{priority_clause}' in team_config.custom_jql_base:
-                jql_base = team_config.custom_jql_base.format(
-                    projects=projects_str,
-                    components=components_str,
-                    priority_clause=priority_clause if priority_clause else "1=1"  # Always true condition if no priority
-                )
+                if not priority:
+                    # User wants non-telco bugs - remove priority clause entirely
+                    jql_base = team_config.custom_jql_base
+                    jql_base = jql_base.replace('AND {priority_clause}', '')
+                    jql_base = jql_base.replace('{priority_clause} AND', '')
+                    jql_base = jql_base.replace('{priority_clause}', '')
+                    jql_base = jql_base.format(
+                        projects=projects_str,
+                        components=components_str
+                    )
+                else:
+                    # User wants telco priority filtering
+                    priority_clause = team_config.get_jql_priority_clause()
+                    if not priority_clause:
+                        # Team has no priority values configured - remove the clause
+                        jql_base = team_config.custom_jql_base
+                        jql_base = jql_base.replace('AND {priority_clause}', '')
+                        jql_base = jql_base.replace('{priority_clause} AND', '')
+                        jql_base = jql_base.replace('{priority_clause}', '')
+                        jql_base = jql_base.format(
+                            projects=projects_str,
+                            components=components_str
+                        )
+                    else:
+                        jql_base = team_config.custom_jql_base.format(
+                            projects=projects_str,
+                            components=components_str,
+                            priority_clause=priority_clause
+                        )
             else:
                 jql_base = team_config.custom_jql_base.format(
                     projects=projects_str,
@@ -1084,7 +1110,7 @@ async def _find_stale_issues_core(
                 jql = jql_base
             
             # Add ordering
-            jql += ' ORDER BY updated ASC'
+            jql += ' ORDER BY key DESC'
             
         else:
             # Standard JQL construction (for teams without custom JQL)
@@ -1147,7 +1173,7 @@ async def _find_stale_issues_core(
                 jql_parts.append(f'affectedVersion in ({version_list})')
             
             # Build and execute JQL query with ordering
-            jql = " AND ".join(jql_parts) + " ORDER BY updated ASC"
+            jql = " AND ".join(jql_parts) + " ORDER BY key DESC"
         
         # Increase cap to allow more results (100 max for better coverage)
         max_results_cap = min(max_results, MAX_RESULTS_CAP)
@@ -1229,23 +1255,23 @@ async def _find_stale_issues_core(
                     latest_comment = comments[-1]
                     # Parse the comment date (JIRA can return string or datetime)
                     comment_date = latest_comment.created
-                    
+
                     # Normalize to datetime object if it's a string
                     if isinstance(comment_date, str):
                         comment_date_str = comment_date
-                    # Remove timezone info and microseconds for parsing
-                    if 'T' in comment_date_str:
-                        comment_date_str = comment_date_str.split('T')[0] + 'T' + comment_date_str.split('T')[1][:19]
-                    
-                    try:
-                        latest_comment_date = datetime.fromisoformat(comment_date_str.replace('Z', '+00:00'))
-                        # Convert to naive datetime for comparison
-                        if latest_comment_date.tzinfo:
-                            latest_comment_date = latest_comment_date.replace(tzinfo=None)
-                    except ValueError:
-                        # If we can't parse the date, treat as stale
-                        is_stale = True
-                        latest_comment_date = comment_date_str
+                        # Remove timezone info and microseconds for parsing
+                        if 'T' in comment_date_str:
+                            comment_date_str = comment_date_str.split('T')[0] + 'T' + comment_date_str.split('T')[1][:19]
+
+                        try:
+                            latest_comment_date = datetime.fromisoformat(comment_date_str.replace('Z', '+00:00'))
+                            # Convert to naive datetime for comparison
+                            if latest_comment_date.tzinfo:
+                                latest_comment_date = latest_comment_date.replace(tzinfo=None)
+                        except ValueError:
+                            # If we can't parse the date, treat as stale
+                            is_stale = True
+                            latest_comment_date = comment_date_str
                     else:
                         # Already a datetime object
                         latest_comment_date = comment_date
@@ -1445,12 +1471,13 @@ async def jira_find_stale_issues(
     override_projects: List[str] = [],
     strict_bugs_only: bool = True,
     include_comment_analysis: bool = True,
-    team_id: Optional[str] = None
+    team_id: Optional[str] = None,
+    priority: bool = True
 ) -> str:
-    """Find stale priority bugs with no recent comments using team-specific configuration.
-    
+    """Find stale bugs with no recent comments using team-specific configuration.
+
     Args:
-        days_threshold: Days threshold for staleness (default: 14)
+        days_threshold: Days threshold for staleness (default: 0)
         include_no_comments: Include issues with no comments (default: True)
         affects_versions: Filter by specific versions (default: [])
         max_results: Maximum number of results (default: 50)
@@ -1461,6 +1488,7 @@ async def jira_find_stale_issues(
         strict_bugs_only: Only include bug-type issues, exclude stories/epics/tasks (default: True)
         include_comment_analysis: Include detailed comment analysis for AI processing (default: True)
         team_id: Team identifier (e.g., 'deployment', 'ptp', 'networking'). Use jira_list_teams() to see available teams. (default: None = deployment team)
+        priority: Include telco priority filtering (default: True). Set to False for non-telco bugs
     """
     result = await _find_stale_issues_core(
         days_threshold=days_threshold,
@@ -1473,7 +1501,8 @@ async def jira_find_stale_issues(
         override_projects=override_projects,
         strict_bugs_only=strict_bugs_only,
         include_comment_analysis=include_comment_analysis,
-        team_id=team_id
+        team_id=team_id,
+        priority=priority
     )
     # Return only the formatted string for the MCP tool
     return result['formatted_output']
@@ -1495,7 +1524,8 @@ async def jira_generate_stale_issues_report(
     custom_analysis: str = "",
     key_findings: str = "",
     executive_summary: str = "",
-    team_id: Optional[str] = None
+    team_id: Optional[str] = None,
+    priority: bool = True
 ) -> str:
     """
     Generate a comprehensive HTML report for stale JIRA issues using the enhanced template.
@@ -1519,9 +1549,9 @@ async def jira_generate_stale_issues_report(
     
     **If no custom_analysis is provided:**
     The report will show excerpts from the last 3 JIRA comments as fallback.
-    
+
     Args:
-        days_threshold: Number of days to consider an issue stale (default: 5)
+        days_threshold: Number of days to consider an issue stale (default: 0)
         include_no_comments: Include issues with zero comments (default: True)
         affects_versions: List of specific versions to filter by (e.g., ["4.14", "4.16"])
         additional_projects: Additional projects to search beyond defaults
@@ -1536,6 +1566,7 @@ async def jira_generate_stale_issues_report(
         key_findings: Key findings summary to display in the Executive Dashboard (newline-separated list) (default: "")
         executive_summary: AI-generated executive summary narrative (plain text or multiple paragraphs separated by double newlines) (default: "")
         team_id: Team identifier (e.g., 'deployment', 'ptp', 'networking'). Use jira_list_teams() to see available teams. (default: None = deployment team)
+        priority: Include telco priority filtering (default: True). Set to False for non-telco bugs
 
     Returns:
         Status message with report location and summary
@@ -1562,7 +1593,8 @@ async def jira_generate_stale_issues_report(
             override_components=override_components,
             max_results=max_results,
             include_comment_analysis=include_comment_analysis,
-            team_id=team_id
+            team_id=team_id,
+            priority=priority
         )
         
         # Extract raw metrics from the result dictionary
