@@ -35,6 +35,9 @@ try:
         get_team_config,
         list_available_teams,
         get_default_team,
+        get_epic_team_ids,
+        resolve_team_ids,
+        normalize_openshift_version,
         TeamConfig,
         TEAM_REGISTRY
     )
@@ -90,24 +93,25 @@ burst_count = 0
 
 
 async def init_jira_client():
-    """Initialize JIRA client with Bearer token authentication."""
+    """Initialize JIRA client with Basic authentication."""
     global jira_client
-    
+
     jira_url = os.getenv("JIRA_URL")
+    jira_username = os.getenv("JIRA_USERNAME")
     jira_token = os.getenv("JIRA_TOKEN")
-    
-    if not all([jira_url, jira_token]):
+
+    if not all([jira_url, jira_username, jira_token]):
         raise ValueError(
-            "JIRA credentials not provided. Please set JIRA_URL and JIRA_TOKEN (Bearer token) environment variables."
+            "JIRA credentials not provided. Please set JIRA_URL, JIRA_USERNAME, and JIRA_TOKEN environment variables."
         )
-    
+
     try:
-        # Use Bearer token authentication
+        # Use Basic authentication (username:token)
         jira_client = JIRA(
             server=jira_url,
-            token_auth=jira_token
+            basic_auth=(jira_username, jira_token)
         )
-        logger.info("JIRA client initialized successfully with Bearer token")
+        logger.info(f"JIRA client initialized successfully with Basic Auth for user: {jira_username}")
     except JIRAError as e:
         logger.error(f"Failed to initialize JIRA client: {str(e)}")
         raise
@@ -173,20 +177,146 @@ async def jira_list_teams() -> str:
         for team in teams:
             result += f"**Team:** {team['team_name']} (ID: `{team['team_id']}`)\n"
             result += f"**Description:** {team['description']}\n"
-            result += f"**Default Projects:** {team['default_projects']}\n"
-            result += f"**Default Components:**\n"
-            components = team['default_components'].split(', ')
-            for comp in components:
-                result += f"  • {comp}\n"
+            result += f"**Stale bug projects:** {team['default_projects']}\n"
+            result += f"**Stale bug components:**\n"
+            bug_components = team['default_components'].split(', ')
+            for comp in bug_components:
+                if comp:
+                    result += f"  • {comp}\n"
+            result += f"**OpenShift epic components (CNF Fix Version):** {team['epic_components']}\n"
             result += "\n" + "-"*60 + "\n\n"
         
-        result += "\n💡 **Usage:** Pass `team_id` parameter to any stale issues function to use team-specific configuration.\n"
-        result += "   Example: `jira_find_stale_issues(team_id='ptp', days_threshold=7)`\n"
+        result += "\n**Usage:**\n"
+        result += "   • Stale bugs: `jira_find_stale_issues(team_id='ptp', days_threshold=7)`\n"
+        result += "   • All teams: `jira_fetch_openshift_epics_by_team(openshift_version='openshift-5.0')`\n"
+        result += "   • One team: `jira_fetch_openshift_epics_by_team(openshift_version='5.0', team_ids=['networking'])`\n"
         
         return result
         
     except Exception as e:
         return f"Error listing teams: {str(e)}"
+
+
+@app.tool()
+async def jira_fetch_openshift_epics_by_team(
+    openshift_version: str,
+    team_ids: Optional[List[str]] = None,
+    max_results: int = DEFAULT_MAX_RESULTS,
+) -> str:
+    """
+    Fetch OpenShift release epics and stories from CNF for all (or selected) teams, grouped by team.
+
+    Epics and stories only — no bugs. Filtered by Fix Version (e.g. fixVersion = "openshift-5.0").
+    No telco priority filtering.
+
+    Use when the user asks for work planned for an OpenShift version (e.g. openshift-5.0).
+
+    Team selection:
+    - Omit team_ids (or ask for "all teams") to query every team with epic_components configured.
+    - Pass team_ids with team_id values (e.g. ["networking", "deployment"]) or resolve from
+      display names before calling (e.g. "Networking Team" -> networking, "ORAN" -> oran).
+
+    Example user prompts:
+    - "Fetch openshift-5.0 epics for all teams grouped by team"
+    - "Show openshift-5.0 epics for the Networking team"
+    - "Get planned work for openshift-5.0 for Deployment and ORAN"
+
+    Args:
+        openshift_version: OpenShift version (e.g. "5.0", "openshift-5.0", "4.18")
+        team_ids: Optional list of team IDs or names (default: all epic teams). Examples:
+                  None = all teams; ["networking"]; ["Networking Team", "ptp"]
+        max_results: Maximum issues per team (default: 100, capped at MAX_RESULTS_CAP)
+    """
+    if not jira_client:
+        await init_jira_client()
+
+    try:
+        normalized_version = normalize_openshift_version(openshift_version)
+
+        if team_ids:
+            try:
+                teams_to_query = resolve_team_ids(team_ids)
+            except ValueError as e:
+                return f"Error: {str(e)}"
+        else:
+            teams_to_query = get_epic_team_ids()
+
+        invalid_epic_teams = [
+            tid for tid in teams_to_query
+            if tid not in TEAM_REGISTRY or not get_team_config(tid).epic_components
+        ]
+        if invalid_epic_teams:
+            return (
+                f"Error: Team(s) {', '.join(invalid_epic_teams)} have no epic_components configured "
+                f"for OpenShift release queries."
+            )
+
+        max_results_cap = min(max_results, MAX_RESULTS_CAP)
+        epic_fields = (
+            "summary,status,assignee,reporter,fixVersions,components,labels,issuetype,project"
+        )
+
+        result = f"📦 **OpenShift Release Work: {normalized_version}**\n"
+        result += (
+            f"Project: CNF | Issue types: Epic, Story | "
+            f"Fix Version: {normalized_version} | No telco priority filter\n"
+        )
+        result += "=" * 60 + "\n\n"
+
+        total_issues = 0
+        teams_with_issues = 0
+
+        for team_id in teams_to_query:
+            team_config = get_team_config(team_id)
+            jql = team_config.get_epic_jql(normalized_version)
+
+            await rate_limit()
+            issues = jira_client.search_issues(
+                jql,
+                maxResults=max_results_cap,
+                fields=epic_fields,
+            )
+
+            issue_count = len(issues)
+            total_issues += issue_count
+            if issue_count > 0:
+                teams_with_issues += 1
+
+            result += (
+                f"## {team_config.team_name} ({issue_count} issue"
+                f"{'s' if issue_count != 1 else ''})\n"
+            )
+
+            if not issues:
+                result += "_No epics or stories found for this team._\n\n"
+            else:
+                for issue in issues:
+                    assignee = getattr(issue.fields.assignee, "displayName", "Unassigned")
+                    reporter = getattr(issue.fields.reporter, "displayName", "Unknown")
+                    status = issue.fields.status.name
+                    issue_type = issue.fields.issuetype.name
+                    result += (
+                        f"- **{issue.key}** [{issue_type}]: {issue.fields.summary} | "
+                        f"{status} | Assignee: {assignee} | Reporter: {reporter}\n"
+                    )
+                result += "\n"
+
+            result += f"**JQL for {team_config.team_name}:**\n"
+            result += f"```\n{jql}\n```\n\n"
+            result += "-" * 60 + "\n\n"
+
+        result += (
+            f"📊 **Summary:** {total_issues} epic/story issue(s) across "
+            f"{len(teams_to_query)} team(s) ({teams_with_issues} team(s) with results)\n"
+        )
+        result += f"🎯 Fix Version: `{normalized_version}`\n"
+
+        return result
+
+    except JIRAError as e:
+        return f"JIRA Error: {str(e)}"
+    except Exception as e:
+        return f"Error fetching OpenShift epics: {str(e)}"
 
 
 @app.tool()
@@ -1839,9 +1969,9 @@ async def main():
     """Main function to run the FastMCP JIRA server."""
     try:
         # Check for required environment variables
-        required_vars = ["JIRA_URL", "JIRA_TOKEN"]
+        required_vars = ["JIRA_URL", "JIRA_USERNAME", "JIRA_TOKEN"]
         missing_vars = [var for var in required_vars if not os.getenv(var)]
-        
+
         if missing_vars:
             print("❌ Missing required environment variables:", file=sys.stderr)
             for var in missing_vars:
@@ -1849,12 +1979,14 @@ async def main():
             print("\nPlease set these environment variables before running the server.", file=sys.stderr)
             print("\nExample:", file=sys.stderr)
             print("export JIRA_URL='https://your-domain.atlassian.net'", file=sys.stderr)
-            print("export JIRA_TOKEN='your-bearer-token'", file=sys.stderr)
+            print("export JIRA_USERNAME='your-email@example.com'", file=sys.stderr)
+            print("export JIRA_TOKEN='your-api-token'", file=sys.stderr)
             return
-        
+
         print("🚀 Starting FastMCP JIRA Server...", file=sys.stderr)
         print(f"JIRA URL: {os.getenv('JIRA_URL')}", file=sys.stderr)
-        print(f"Authentication: Bearer Token", file=sys.stderr)
+        print(f"JIRA Username: {os.getenv('JIRA_USERNAME')}", file=sys.stderr)
+        print(f"Authentication: Basic Auth (username:token)", file=sys.stderr)
         
         # Try using stdio mode instead
         await app.run_stdio_async()
