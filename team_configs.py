@@ -248,7 +248,7 @@ DEPLOYMENT_TEAM = TeamConfig(
     epic_components=[
         "Deployment and Lifecycle",
         "Hub RDS",
-        "Edge",
+        "CNF vRAN / Far Edge",
     ],
 )
 

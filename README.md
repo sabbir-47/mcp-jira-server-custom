@@ -146,7 +146,7 @@ Planned epics and stories in CNF by Fix Version (not stale bugs). Ask for all te
 **All teams:**
 ```
 Fetch openshift-X.0 epics for all teams grouped by team
-List planned work for openshift-5.0 across every team
+List planned work for openshift-X.0 across every team
 ```
 
 **Specific team(s) by name:**
@@ -191,7 +191,7 @@ Stale bug searches use OCPBUGS components (`default_components`). OpenShift plan
 
 | Team | ID | Stale bugs (OCPBUGS) | OpenShift epics (CNF Fix Version) |
 |------|----|----------------------|-----------------------------------|
-| Deployment | `deployment` | GitOps ZTP, bare metal, installer, oc | Deployment and Lifecycle, Hub RDS, Edge |
+| Deployment | `deployment` | GitOps ZTP, bare metal, installer, oc | Deployment and Lifecycle, Hub RDS, Edge, CNF vRAN / Far Edge |
 | Compute | `compute` | (not configured) | CNF Compute |
 | Networking | `networking` | Kernel, OVN, multus, nmstate, SR-IOV, etc. | CNF Network |
 | PTP | `ptp` | PTP, cloud events, HW event operator | Precision Timing |
